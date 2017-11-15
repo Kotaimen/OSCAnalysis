@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: OSM change analysis.
+
+Resources:
+
+  # === Storage ===
+
+  ChangeStateTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "seq"
+          AttributeType: N
+        - AttributeName: "timestamp"
+          AttributeType: S
+      KeySchema:
+        - AttributeName: "seq"
+          KeyType: HASH
+        - AttributeName: "timestamp"
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  DataDeliveryBucket:
+    Type: "AWS::S3::Bucket"
+
+
+  # === Change Trigger ===
+
+  CheckStateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: check_state.lambda_handler
+      Runtime: python3.6
+      CodeUri: ./code/check_state.py
+      MemorySize: 128
+      Timeout: 30
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:*
+            Resource: !GetAtt ChangeStateTable.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ChangeStateTable
+      Events:
+        Timer:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+
+  # === Ingest Delivery Steam ===
+
+  FirehoseDeliveryRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ""
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                "sts:ExternalId": !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: FirehoseDeliveryPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt DataDeliveryBucket.Arn
+                  - !Join
+                    - "/"
+                    - - !GetAtt DataDeliveryBucket.Arn
+                      - "*"
+
+  IngestDeliveryStream:
+    Type: "AWS::KinesisFirehose::DeliveryStream"
+    Properties:
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt DataDeliveryBucket.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 50
+        CompressionFormat: GZIP
+        Prefix: "minute/"
+        RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+
+  OscIngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: osc_ingest.lambda_handler
+      Runtime: python3.6
+      CodeUri: ./code/osc_ingest.py
+      MemorySize: 256
+      Timeout: 120
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+              - firehose:PutRecord*
+            Resource: !GetAtt IngestDeliveryStream.Arn
+      Environment:
+        Variables:
+          FIREHOSE_STREAM_NAME: !Ref IngestDeliveryStream
+      Events:
+        Timer:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt ChangeStateTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 1
+
