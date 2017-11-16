@@ -77,7 +77,8 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
-              - Effect: Allow
+              - Sid: AllowWriteToS3
+                Effect: Allow
                 Action:
                   - "s3:AbortMultipartUpload"
                   - "s3:GetBucketLocation"
@@ -111,8 +112,8 @@ Resources:
       Handler: osc_ingest.lambda_handler
       Runtime: python3.6
       CodeUri: ./code/osc_ingest.py
-      MemorySize: 256
-      Timeout: 120
+      MemorySize: 512
+      Timeout: 300
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -131,3 +132,134 @@ Resources:
             StartingPosition: TRIM_HORIZON
             BatchSize: 1
 
+  # === Streaming Analytics ===
+
+  AnalyticsOutputStream:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      RetentionPeriodHours: 24
+      ShardCount: 1
+
+  KinesisAnalyticsRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kinesisanalytics.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: KinesisAnalyticsPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ReadInputFirehose
+                Effect: Allow
+                Action:
+                 - "firehose:DescribeDeliveryStream"
+                 - "firehose:Get*"
+                Resource:
+                  - !GetAtt IngestDeliveryStream.Arn
+              - Sid: WriteOutputKinesis
+                Effect: Allow
+                Action:
+                 - "kinesis:DescribeStream"
+                 - "kinesis:PutRecord"
+                 - "kinesis:PutRecords"
+                Resource:
+                  - !GetAtt AnalyticsOutputStream.Arn
+
+  SteamAnalyticsApp:
+    Type: "AWS::KinesisAnalytics::Application"
+    Properties:
+      Inputs:
+        - NamePrefix: "osc"
+          KinesisFirehoseInput:
+            ResourceARN: !GetAtt IngestDeliveryStream.Arn
+            RoleARN: !GetAtt KinesisAnalyticsRole.Arn
+          InputSchema:
+            RecordFormat:
+              RecordFormatType: "JSON"
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: "$"
+            RecordColumns:
+              - Name: change
+                SqlType: "VARCHAR(16)"
+                Mapping: "$.change"
+              - Name: feature
+                SqlType: "VARCHAR(16)"
+                Mapping: "$.feature"
+              - Name: id
+                SqlType: "BIGINT"
+                Mapping: "$.id"
+              - Name: user_id
+                SqlType: "BIGINT"
+                Mapping: "$.uid"
+              - Name: user_name
+                SqlType: "VARCHAR(128)"
+                Mapping: "$.user"
+              - Name: changeset
+                SqlType: "BIGINT"
+                Mapping: "$.changeset"
+              - Name: change_time
+                SqlType: "TIMESTAMP"
+                Mapping: "$.timestamp"
+      ApplicationCode: |
+        CREATE OR REPLACE STREAM DESTINATION_SQL_STREAM (
+            ITEM VARCHAR(128),
+            ITEM_COUNT BIGINT
+        );
+        CREATE OR REPLACE PUMP "STREAM_PUMP" AS
+           INSERT INTO "DESTINATION_SQL_STREAM"
+              SELECT STREAM *
+              FROM TABLE(TOP_K_ITEMS_TUMBLING(
+                               CURSOR(SELECT STREAM * FROM "osc_001"),
+                               'user_name',
+                               3,
+                               60
+                               )
+                          );
+
+  # === Result publish ===
+
+  AnalyticsAppOutput:
+    Type: "AWS::KinesisAnalytics::ApplicationOutput"
+    Properties:
+      ApplicationName: !Ref SteamAnalyticsApp
+      Output:
+        Name: "DESTINATION_SQL_STREAM"
+        DestinationSchema:
+          RecordFormatType: "JSON"
+        KinesisStreamsOutput:
+          ResourceARN: !GetAtt AnalyticsOutputStream.Arn
+          RoleARN: !GetAtt KinesisAnalyticsRole.Arn
+
+
+  PublishResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: publish_result.lambda_handler
+      Runtime: python3.6
+      CodeUri: ./code/publish_result.py
+      MemorySize: 128
+      Timeout: 60
+#      Policies:
+#        - Version: "2012-10-17"
+#          Statement:
+#          - Effect: Allow
+#            Action:
+#              - firehose:PutRecord*
+#            Resource: !GetAtt IngestDeliveryStream.Arn
+#      Environment:
+#        Variables:
+#          FIREHOSE_STREAM_NAME: !Ref IngestDeliveryStream
+      Events:
+        Timer:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt AnalyticsOutputStream.Arn
+            StartingPosition: LATEST
+            BatchSize: 3
