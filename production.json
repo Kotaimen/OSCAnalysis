@@ -1,0 +1,18 @@
+{
+  "Parameters": {
+  },
+  "Tags": {
+    "project": "OSCAnalysis",
+    "enviornment": "Production"
+  },
+  "StackPolicy": {
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": "*",
+        "Principal": "*",
+        "Resource": "*"
+      }
+    ]
+  }
+}
