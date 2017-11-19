@@ -29,7 +29,6 @@ Resources:
   DataDeliveryBucket:
     Type: "AWS::S3::Bucket"
 
-
   # === Change Trigger ===
 
   CheckStateFunction:
@@ -258,6 +257,8 @@ Resources:
 
   PublishResultFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+     - AnalyticsAppOutput
     Properties:
       Handler: publish_result.lambda_handler
       Runtime: python3.6
@@ -283,9 +284,11 @@ Resources:
 
   Dashboard:
     Type: "AWS::CloudWatch::Dashboard"
+    DependsOn:
+      - PublishResultFunction
     Properties:
-      DashboardName: !Ref AWS::StackName
-      DashboardBody: |
+      DashboardName: !Sub "{AWS::StackName} Dashboard (${AWS::Region})"
+      DashboardBody: !Sub |
         {
             "widgets": [
                 {
@@ -339,7 +342,7 @@ Resources:
                             [ ".", "delete", ".", ".", { "stat": "Sum", "period": 86400, "color": "#d62728" } ],
                             [ ".", "modify", ".", ".", { "stat": "Sum", "period": 86400, "color": "#1f77b4" } ]
                         ],
-                        "region": "us-east-1",
+                        "region": "${AWS:Region}",
                         "period": 300,
                         "title": "OSC Daily Changes"
                     }
