@@ -257,8 +257,6 @@ Resources:
 
   PublishResultFunction:
     Type: AWS::Serverless::Function
-    DependsOn:
-     - AnalyticsAppOutput
     Properties:
       Handler: publish_result.lambda_handler
       Runtime: python3.6
@@ -284,8 +282,6 @@ Resources:
 
   Dashboard:
     Type: "AWS::CloudWatch::Dashboard"
-    DependsOn:
-      - PublishResultFunction
     Properties:
       DashboardName: !Sub "{AWS::StackName} Dashboard (${AWS::Region})"
       DashboardBody: !Sub |
