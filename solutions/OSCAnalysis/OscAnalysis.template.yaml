@@ -283,65 +283,67 @@ Resources:
   Dashboard:
     Type: "AWS::CloudWatch::Dashboard"
     Properties:
-      DashboardName: !Sub "{AWS::StackName} Dashboard (${AWS::Region})"
-      DashboardBody: !Sub |
-        {
-            "widgets": [
-                {
-                    "type": "metric",
-                    "x": 0,
-                    "y": 3,
-                    "width": 21,
-                    "height": 6,
-                    "properties": {
-                        "view": "timeSeries",
-                        "stacked": true,
-                        "metrics": [
-                            [ "OSM/OSC", "create", "Group Name", "Change ", { "period": 300, "color": "#2ca02c" } ],
-                            [ ".", "delete", ".", ".", { "period": 300, "color": "#d62728" } ],
-                            [ ".", "modify", ".", ".", { "period": 300, "color": "#1f77b4" } ]
-                        ],
-                        "region": "us-east-1",
-                        "period": 300,
-                        "title": "Change Type"
-                    }
-                },
-                {
-                    "type": "metric",
-                    "x": 0,
-                    "y": 9,
-                    "width": 21,
-                    "height": 6,
-                    "properties": {
-                        "view": "timeSeries",
-                        "stacked": false,
-                        "metrics": [
-                            [ "OSM/OSC", "node", "Group Name", "Feature", { "period": 60 } ],
-                            [ ".", "way", ".", ".", { "period": 60 } ],
-                            [ ".", "relation", ".", ".", { "period": 60 } ]
-                        ],
-                        "region": "us-east-1",
-                        "period": 300,
-                        "title": "Feature Type"
-                    }
-                },
-                {
-                    "type": "metric",
-                    "x": 0,
-                    "y": 0,
-                    "width": 21,
-                    "height": 3,
-                    "properties": {
-                        "view": "singleValue",
-                        "metrics": [
-                            [ "OSM/OSC", "create", "Group Name", "Change ", { "stat": "Sum", "period": 86400, "color": "#2ca02c" } ],
-                            [ ".", "delete", ".", ".", { "stat": "Sum", "period": 86400, "color": "#d62728" } ],
-                            [ ".", "modify", ".", ".", { "stat": "Sum", "period": 86400, "color": "#1f77b4" } ]
-                        ],
-                        "region": "${AWS:Region}",
-                        "period": 300,
-                        "title": "OSC Daily Changes"
-                    }
-                }
-            ]
-        }
+      DashboardName: !Sub "${AWS::StackName}_Dashboard_${AWS::Region}"
+      DashboardBody:
+        Fn::Sub: |
+          {
+              "widgets": [
+                  {
+                      "type": "metric",
+                      "x": 0,
+                      "y": 3,
+                      "width": 21,
+                      "height": 6,
+                      "properties": {
+                          "view": "timeSeries",
+                          "stacked": true,
+                          "metrics": [
+                              [ "OSM/OSC", "create", "Group Name", "Change ", { "period": 300, "color": "#2ca02c" } ],
+                              [ ".", "delete", ".", ".", { "period": 300, "color": "#d62728" } ],
+                              [ ".", "modify", ".", ".", { "period": 300, "color": "#1f77b4" } ]
+                          ],
+                          "region": "${AWS::Region}",
+                          "period": 300,
+                          "title": "Change Type"
+                      }
+                  },
+                  {
+                      "type": "metric",
+                      "x": 0,
+                      "y": 9,
+                      "width": 21,
+                      "height": 6,
+                      "properties": {
+                          "view": "timeSeries",
+                          "stacked": false,
+                          "metrics": [
+                              [ "OSM/OSC", "node", "Group Name", "Feature", { "period": 60 } ],
+                              [ ".", "way", ".", ".", { "period": 60 } ],
+                              [ ".", "relation", ".", ".", { "period": 60 } ]
+                          ],
+                          "region": "${AWS::Region}",
+                          "period": 300,
+                          "title": "Feature Type"
+                      }
+                  },
+                  {
+                      "type": "metric",
+                      "x": 0,
+                      "y": 0,
+                      "width": 21,
+                      "height": 3,
+                      "properties": {
+                          "view": "singleValue",
+                          "metrics": [
+                              [ "OSM/OSC", "create", "Group Name", "Change ", { "stat": "Sum", "period": 86400, "color": "#2ca02c" } ],
+                              [ ".", "delete", ".", ".", { "stat": "Sum", "period": 86400, "color": "#d62728" } ],
+                              [ ".", "modify", ".", ".", { "stat": "Sum", "period": 86400, "color": "#1f77b4" } ]
+                          ],
+                          "region": "${AWS::Region}",
+                          "period": 300,
+                          "title": "Daily Changes"
+                      }
+                  }
+              ]
+          }
+
