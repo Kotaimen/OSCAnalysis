@@ -1,63 +1,86 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-
 Description: OSM change analysis.
+
+#Globals:
+#  Function:
+#    Runtime: python3.6
+#    MemorySize: 128
+#    Timeout: 30
+#    Environment:
+#      Variables:
+
 
 Resources:
 
-  # === Storage ===
+  # === Data Storage ===
+  StorageBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
 
-  ChangeStateTable:
+  # === Osc Data Ingest ===
+
+  OscStatesTable:
     Type: "AWS::DynamoDB::Table"
     Properties:
       AttributeDefinitions:
         - AttributeName: "seq"
           AttributeType: N
-        - AttributeName: "timestamp"
-          AttributeType: S
       KeySchema:
         - AttributeName: "seq"
           KeyType: HASH
-        - AttributeName: "timestamp"
-          KeyType: RANGE
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
       StreamSpecification:
         StreamViewType: NEW_IMAGE
-
-  DataDeliveryBucket:
-    Type: "AWS::S3::Bucket"
-
-  # === Change Trigger ===
+      TimeToLiveSpecification:
+        Enabled: true
+        AttributeName: ttl
 
   CheckStateFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: check_state.lambda_handler
+      Description: Check OSC state and store in DDB
       Runtime: python3.6
-      CodeUri: ./code/check_state.py
       MemorySize: 128
       Timeout: 30
+      Handler: check_state.lambda_handler
+      CodeUri: ./code/check_state.py
+      Tracing: Active
       Policies:
-        - Version: "2012-10-17"
-          Statement:
-          - Effect: Allow
-            Action:
-              - dynamodb:*
-            Resource: !GetAtt ChangeStateTable.Arn
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OscStatesTable
       Environment:
         Variables:
-          TABLE_NAME: !Ref ChangeStateTable
+          OSC_TABLE_NAME: !Ref OscStatesTable
       Events:
         Timer:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)
 
-  # === Ingest Delivery Steam ===
+  TransformChangeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Transform XML changes to JSON
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 60
+      Handler: transform_change.lambda_handler
+      CodeUri: ./code/transform_change.py
+      Tracing: Active
+      Policies:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
 
-  FirehoseDeliveryRole:
+  IngestStreamDeliveryRole:
     Type: "AWS::IAM::Role"
     Properties:
       AssumeRolePolicyDocument:
@@ -86,264 +109,101 @@ Resources:
                   - "s3:ListBucketMultipartUploads"
                   - "s3:PutObject"
                 Resource:
-                  - !GetAtt DataDeliveryBucket.Arn
+                  - !GetAtt StorageBucket.Arn
                   - !Join
                     - "/"
-                    - - !GetAtt DataDeliveryBucket.Arn
+                    - - !GetAtt StorageBucket.Arn
                       - "*"
 
-  IngestDeliveryStream:
+  IngestStreamTransformInvokeRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ""
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                "sts:ExternalId": !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: LambdaInvokePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowWriteToS3
+                Effect: Allow
+                Action:
+                  - "lambda:Invoke*"
+                Resource:
+                  - !GetAtt TransformChangeFunction.Arn
+
+  IngestStream:
     Type: "AWS::KinesisFirehose::DeliveryStream"
     Properties:
       DeliveryStreamType: DirectPut
       ExtendedS3DestinationConfiguration:
-        BucketARN: !GetAtt DataDeliveryBucket.Arn
+        BucketARN: !GetAtt StorageBucket.Arn
         BufferingHints:
           IntervalInSeconds: 60
-          SizeInMBs: 50
+          SizeInMBs: 5
         CompressionFormat: GZIP
-        Prefix: "minute/"
-        RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+        Prefix: "ingest/osc_minute/"
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt TransformChangeFunction.Arn
+                - ParameterName: NumberOfRetries
+                  ParameterValue: 3
+                - ParameterName: RoleArn
+                  ParameterValue: !GetAtt IngestStreamTransformInvokeRole.Arn
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: 3
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: 60
+        RoleARN: !GetAtt IngestStreamDeliveryRole.Arn
+        S3BackupConfiguration:
+          BucketARN: !GetAtt StorageBucket.Arn
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 50
+          CompressionFormat: GZIP
+          Prefix: "ingest/osc_minute_backup/"
+          RoleARN: !GetAtt IngestStreamDeliveryRole.Arn
+        S3BackupMode: Enabled
 
-  OscIngestFunction:
+  DownloadOscFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: osc_ingest.lambda_handler
+      Description: Download OSC data and split into XML change fragments
+        then write to Firehose
       Runtime: python3.6
-      CodeUri: ./code/osc_ingest.py
-      MemorySize: 512
-      Timeout: 300
+      MemorySize: 128
+      Timeout: 30
+      Handler: download_osc.lambda_handler
+      CodeUri: ./code/download_osc.py
+      Tracing: Active
       Policies:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
         - Version: "2012-10-17"
           Statement:
           - Effect: Allow
             Action:
               - firehose:PutRecord*
-            Resource: !GetAtt IngestDeliveryStream.Arn
+            Resource: !GetAtt IngestStream.Arn
       Environment:
         Variables:
-          FIREHOSE_STREAM_NAME: !Ref IngestDeliveryStream
+          FIREHOSE_STREAM_NAME: !Ref IngestStream
       Events:
         Timer:
           Type: DynamoDB
           Properties:
-            Stream: !GetAtt ChangeStateTable.StreamArn
+            Stream: !GetAtt OscStatesTable.StreamArn
             StartingPosition: TRIM_HORIZON
             BatchSize: 1
-
-  # === Streaming Analytics ===
-
-  AnalyticsOutputStream:
-    Type: 'AWS::Kinesis::Stream'
-    Properties:
-      RetentionPeriodHours: 24
-      ShardCount: 1
-
-  KinesisAnalyticsRole:
-    Type: "AWS::IAM::Role"
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: kinesisanalytics.amazonaws.com
-            Action: "sts:AssumeRole"
-      Policies:
-        - PolicyName: KinesisAnalyticsPolicy
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Sid: ReadInputFirehose
-                Effect: Allow
-                Action:
-                 - "firehose:DescribeDeliveryStream"
-                 - "firehose:Get*"
-                Resource:
-                  - !GetAtt IngestDeliveryStream.Arn
-              - Sid: WriteOutputKinesis
-                Effect: Allow
-                Action:
-                 - "kinesis:DescribeStream"
-                 - "kinesis:PutRecord"
-                 - "kinesis:PutRecords"
-                Resource:
-                  - !GetAtt AnalyticsOutputStream.Arn
-
-  SteamAnalyticsApp:
-    Type: "AWS::KinesisAnalytics::Application"
-    Properties:
-      Inputs:
-        - NamePrefix: "osc"
-          KinesisFirehoseInput:
-            ResourceARN: !GetAtt IngestDeliveryStream.Arn
-            RoleARN: !GetAtt KinesisAnalyticsRole.Arn
-          InputSchema:
-            RecordFormat:
-              RecordFormatType: "JSON"
-              MappingParameters:
-                JSONMappingParameters:
-                  RecordRowPath: "$"
-            RecordColumns:
-              - Name: change
-                SqlType: "VARCHAR(16)"
-                Mapping: "$.change"
-              - Name: feature
-                SqlType: "VARCHAR(16)"
-                Mapping: "$.feature"
-              - Name: id
-                SqlType: "BIGINT"
-                Mapping: "$.id"
-              - Name: user_id
-                SqlType: "BIGINT"
-                Mapping: "$.uid"
-              - Name: user_name
-                SqlType: "VARCHAR(128)"
-                Mapping: "$.user"
-              - Name: changeset
-                SqlType: "BIGINT"
-                Mapping: "$.changeset"
-              - Name: change_time
-                SqlType: "TIMESTAMP"
-                Mapping: "$.timestamp"
-      ApplicationCode: |
-        CREATE OR REPLACE STREAM "DESTINATION_SQL_STREAM" (
-          GROUP_NAME VARCHAR(8),
-          INGEST_TIME TIMESTAMP,
-          CLIENT_TIME TIMESTAMP,
-          CATEGORY VARCHAR(16),
-          ITEM_COUNT BIGINT
-        );
-        CREATE OR REPLACE PUMP "STREAM_PUMP1" AS INSERT INTO "DESTINATION_SQL_STREAM"
-          SELECT STREAM
-            'Change' AS GROUP_NAME,
-            STEP("osc_001".ROWTIME BY INTERVAL '60' SECOND),
-            STEP("osc_001"."change_time" BY INTERVAL '60' SECOND) AS CLIENT_TIME,
-            "change" AS CATEGORY,
-            COUNT(*) AS ITEM_COUNT
-          FROM "osc_001"
-          GROUP BY
-            "change",
-            STEP("osc_001".ROWTIME BY INTERVAL '60' SECOND),
-            STEP("osc_001"."change_time" BY INTERVAL '60' SECOND)
-         UNION ALL
-         SELECT STREAM
-            'Feature' AS GROUP_NAME,
-            STEP("osc_001".ROWTIME BY INTERVAL '60' SECOND),
-            STEP("osc_001"."change_time" BY INTERVAL '60' SECOND) AS CLIENT_TIME,
-            "feature" AS CATEGORY,
-            COUNT(*) AS ITEM_COUNT
-          FROM "osc_001"
-          GROUP BY
-            "feature",
-            STEP("osc_001".ROWTIME BY INTERVAL '60' SECOND),
-            STEP("osc_001"."change_time" BY INTERVAL '60' SECOND)
-          ;
-
-
-  # === Result Publish ===
-
-  AnalyticsAppOutput:
-    Type: "AWS::KinesisAnalytics::ApplicationOutput"
-    Properties:
-      ApplicationName: !Ref SteamAnalyticsApp
-      Output:
-        Name: "DESTINATION_SQL_STREAM"
-        DestinationSchema:
-          RecordFormatType: "JSON"
-        KinesisStreamsOutput:
-          ResourceARN: !GetAtt AnalyticsOutputStream.Arn
-          RoleARN: !GetAtt KinesisAnalyticsRole.Arn
-
-  PublishResultFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: publish_result.lambda_handler
-      Runtime: python3.6
-      CodeUri: ./code/publish_result.py
-      MemorySize: 128
-      Timeout: 60
-      Policies:
-        - Version: "2012-10-17"
-          Statement:
-          - Effect: Allow
-            Action:
-              - cloudwatch:PutMetricData
-            Resource: "*"
-      Events:
-        Timer:
-          Type: Kinesis
-          Properties:
-            Stream: !GetAtt AnalyticsOutputStream.Arn
-            StartingPosition: LATEST
-            BatchSize: 10
-
-  # === Dashboard  ===
-
-  Dashboard:
-    Type: "AWS::CloudWatch::Dashboard"
-    Properties:
-      DashboardName: !Sub "${AWS::StackName}_Dashboard_${AWS::Region}"
-      DashboardBody:
-        Fn::Sub: |
-          {
-              "widgets": [
-                  {
-                      "type": "metric",
-                      "x": 0,
-                      "y": 3,
-                      "width": 21,
-                      "height": 6,
-                      "properties": {
-                          "view": "timeSeries",
-                          "stacked": true,
-                          "metrics": [
-                              [ "OSM/OSC", "create", "Group Name", "Change ", { "period": 300, "color": "#2ca02c" } ],
-                              [ ".", "delete", ".", ".", { "period": 300, "color": "#d62728" } ],
-                              [ ".", "modify", ".", ".", { "period": 300, "color": "#1f77b4" } ]
-                          ],
-                          "region": "${AWS::Region}",
-                          "period": 300,
-                          "title": "Change Type"
-                      }
-                  },
-                  {
-                      "type": "metric",
-                      "x": 0,
-                      "y": 9,
-                      "width": 21,
-                      "height": 6,
-                      "properties": {
-                          "view": "timeSeries",
-                          "stacked": false,
-                          "metrics": [
-                              [ "OSM/OSC", "node", "Group Name", "Feature", { "period": 60 } ],
-                              [ ".", "way", ".", ".", { "period": 60 } ],
-                              [ ".", "relation", ".", ".", { "period": 60 } ]
-                          ],
-                          "region": "${AWS::Region}",
-                          "period": 300,
-                          "title": "Feature Type"
-                      }
-                  },
-                  {
-                      "type": "metric",
-                      "x": 0,
-                      "y": 0,
-                      "width": 21,
-                      "height": 3,
-                      "properties": {
-                          "view": "singleValue",
-                          "metrics": [
-                              [ "OSM/OSC", "create", "Group Name", "Change ", { "stat": "Sum", "period": 86400, "color": "#2ca02c" } ],
-                              [ ".", "delete", ".", ".", { "stat": "Sum", "period": 86400, "color": "#d62728" } ],
-                              [ ".", "modify", ".", ".", { "stat": "Sum", "period": 86400, "color": "#1f77b4" } ]
-                          ],
-                          "region": "${AWS::Region}",
-                          "period": 300,
-                          "title": "Daily Changes"
-                      }
-                  }
-              ]
-          }
-
