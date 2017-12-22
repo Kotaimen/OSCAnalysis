@@ -12,8 +12,12 @@ except ImportError:
     import botocore.vendored.requests as requests
 import botocore.exceptions
 
-# from aws_xray_sdk.core import patch_all
-# patch_all()
+# Try to patch all supported libraries for x-ray
+try:
+    from aws_xray_sdk.core import patch_all
+    patch_all()
+except ImportError:
+    print('Skipping aws_xray_sdk')
 
 print('Loading function')
 
