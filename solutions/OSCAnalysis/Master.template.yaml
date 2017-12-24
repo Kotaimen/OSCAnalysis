@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Open street map change analysis (master template)
+
+Parameters:
+  EncryptionKey:
+    Default: ''
+    Type: String
+    Description: KMS key Id or ARN to encrypt data on rest, leave blank to
+      disable encryption.
+
+  S3IngestPrefix:
+    Description: S3 prefix for OSC data ingested by Kinesis Firehose
+      Stream.
+    Type: String
+    Default: Staging/osc_minute/
+
+  S3IngestBackupPrefix:
+    Description: S3 prefix for OSC update data backup.
+      Stream.
+    Type: String
+    Default: Vanilla/osc_minute_backup/
+
+  OscStream:
+    Description: OSM change stream.
+    Type: String
+    Default: minute
+    AllowedValues: [hour,minute]
+
+Resources:
+
+  StorageBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+            NoncurrentVersionTransitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+            NoncurrentVersionExpirationInDays: 90
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 360
+#            ExpirationInDays: 720
+
+  RealtimeStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: Realtime.template.yaml
+
+  BatchStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: Batch.template.yaml
+
+  IngestStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: Ingest.template.yaml
+
+Outputs:
+  DataLake:
+    Description: S3 storage bucket
+    Value: !Ref StorageBucket
