@@ -3,34 +3,49 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Open street map change analysis (master template)
 
 Parameters:
-  EncryptionKey:
+
+  KmsKeyArn:
     Default: ''
     Type: String
-    Description: KMS key Id or ARN to encrypt data on rest, leave blank to
-      disable encryption.
+    Description: KMS key ARN to encrypt data on rest.
 
   S3IngestPrefix:
     Description: S3 prefix for OSC data ingested by Kinesis Firehose
       Stream.
     Type: String
-    Default: Staging/osc_minute/
+    Default: Staging/osc_change/
 
   S3IngestBackupPrefix:
     Description: S3 prefix for OSC update data backup.
       Stream.
     Type: String
-    Default: Vanilla/osc_minute_backup/
-
-  OscStream:
-    Description: OSM change stream.
-    Type: String
-    Default: minute
-    AllowedValues: [hour,minute]
+    Default: Vanilla/osm_change_backup/
 
 Resources:
 
+#  EncryptionKey:
+#    Type: "AWS::KMS::Key"
+##    DeletionPolicy: Retain
+#    Properties:
+#      Description: Encryption key for OSC change analysis data
+#      KeyPolicy:
+#        Version: "2012-10-17"
+#        Id: Default
+#        Statement:
+#          - Sid: Enable IAM User Permissions
+#            Effect: Allow
+#            Principal:
+#              AWS: !Join
+#                - ''
+#                - - 'arn:aws:iam::'
+#                  - !Ref 'AWS::AccountId'
+#                  - ':root'
+#            Action: 'kms:*'
+#            Resource: '*'
+
   StorageBucket:
     Type: "AWS::S3::Bucket"
+#    DeletionPolicy: Retain
     Properties:
       LifecycleConfiguration:
         Rules:
@@ -46,20 +61,26 @@ Resources:
                 TransitionInDays: 360
 #            ExpirationInDays: 720
 
-  RealtimeStack:
-    Type: "AWS::CloudFormation::Stack"
-    Properties:
-      TemplateURL: Realtime.template.yaml
-
-  BatchStack:
-    Type: "AWS::CloudFormation::Stack"
-    Properties:
-      TemplateURL: Batch.template.yaml
-
   IngestStack:
     Type: "AWS::CloudFormation::Stack"
     Properties:
       TemplateURL: Ingest.template.yaml
+      Parameters:
+        KmsKeyArn: !Ref KmsKeyArn
+        BucketArn:  !GetAtt StorageBucket.Arn
+        S3IngestPrefix: !Ref S3IngestPrefix
+        S3IngestBackupPrefix: !Ref S3IngestBackupPrefix
+
+#  RealtimeStack:
+#    Type: "AWS::CloudFormation::Stack"
+#    Properties:
+#      TemplateURL: Realtime.template.yaml
+#
+#  BatchStack:
+#    Type: "AWS::CloudFormation::Stack"
+#    Properties:
+#      TemplateURL: Batch.template.yaml
+
 
 Outputs:
   DataLake:

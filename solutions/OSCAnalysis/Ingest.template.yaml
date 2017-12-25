@@ -1,10 +1,309 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Data ingestion
 
+Parameters:
+
+  KmsKeyArn:
+    Type: String
+    Description: KMS key ARN to encrypt data on rest.
+
+  BucketArn:
+    Type: String
+    Description: Storage bucket ARN
+
+  S3IngestPrefix:
+    Description: S3 prefix for OSC data ingested by Kinesis Firehose
+      Stream.
+    Type: String
+
+  S3IngestBackupPrefix:
+    Description: S3 prefix for OSC update data backup.
+      Stream.
+    Type: String
+
 Resources:
 
-  DummyGroup:
-    Type: "AWS::IAM::Group"
+  # === DDB ===
 
+  OscStatesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      KeySchema:
+        - KeyType: HASH
+          AttributeName: seq
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      AttributeDefinitions:
+        - AttributeName: seq
+          AttributeType: N
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      ProvisionedThroughput:
+        WriteCapacityUnits: 5
+        ReadCapacityUnits: 5
 
+  # === Check OSC state every minute and write to DDB ===
 
+  CheckStateFunctionTimerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      Principal: events.amazonaws.com
+      FunctionName: !Ref 'CheckStateFunction'
+      SourceArn: !GetAtt 'CheckStateFunctionTimer.Arn'
+
+  CheckStateFunctionTimer:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(1 minute)
+      Targets:
+        - Id: CheckStateFunctionTimerLambdaTarget
+          Arn: !GetAtt 'CheckStateFunction.Arn'
+
+  CheckStateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CheckStateFunctionRolePolicy1
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:BatchGetItem
+                Resource: !Sub
+                  - arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tableName}
+                  - tableName: !Ref 'OscStatesTable'
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  CheckStateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      TracingConfig:
+        Mode: Active
+      Code: ./code/check_state/
+      Description: Check OSC state and store in DDB
+      MemorySize: 128
+      Environment:
+        Variables:
+          OSC_TABLE_NAME: !Ref 'OscStatesTable'
+      Handler: check_state.lambda_handler
+      Role: !GetAtt 'CheckStateFunctionRole.Arn'
+      Timeout: 30
+      Runtime: python3.6
+
+  # === Download OSC and write to Firehose ===
+
+  DownloadOscFunctionTimer:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      EventSourceArn: !GetAtt 'OscStatesTable.StreamArn'
+      FunctionName: !Ref 'DownloadOscFunction'
+      StartingPosition: TRIM_HORIZON
+
+  DownloadOscFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole
+      Policies:
+        - PolicyName: DownloadOscFunctionRolePolicy1
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - firehose:PutRecord*
+                Resource: !GetAtt 'IngestStream.Arn'
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  DownloadOscFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      TracingConfig:
+        Mode: Active
+      Code: ./code/download_osc/
+      Description: Download OSC data and split into change fragments then write to
+        Firehose
+      MemorySize: 128
+      Environment:
+        Variables:
+          FIREHOSE_STREAM_NAME: !Ref 'IngestStream'
+      Handler: download_osc.lambda_handler
+      Role: !GetAtt 'DownloadOscFunctionRole.Arn'
+      Timeout: 30
+      Runtime: python3.6
+
+  # === Firehose ===
+
+  IngestStreamDeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: FirehoseDeliveryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Ref BucketArn
+                  - !Join
+                    - /
+                    - - !Ref BucketArn
+                      - '*'
+                Effect: Allow
+                Sid: AllowWriteToS3
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Principal:
+              Service: firehose.amazonaws.com
+            Effect: Allow
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+            Sid: ''
+
+  IngestStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+        CompressionFormat: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        BucketARN: !Ref BucketArn
+        Prefix: !Ref S3IngestPrefix
+#        EncryptionConfiguration:
+#          KMSEncryptionConfig:
+#            AWSKMSKeyARN: !Ref KmsKeyArn
+        S3BackupMode: Enabled
+        S3BackupConfiguration:
+          CompressionFormat: GZIP
+          RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+          BucketARN: !Ref BucketArn
+          Prefix: !Ref S3IngestBackupPrefix
+#          EncryptionConfiguration:
+#            KMSEncryptionConfig:
+#              AWSKMSKeyARN: !Ref KmsKeyArn
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 50
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt 'TransformChangeFunction.Arn'
+                - ParameterName: NumberOfRetries
+                  ParameterValue: 3
+                - ParameterName: RoleArn
+                  ParameterValue: !GetAtt 'IngestStreamTransformInvokeRole.Arn'
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: 3
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: 60
+      DeliveryStreamType: DirectPut
+
+  IngestStreamTransformInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: LambdaInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt 'TransformChangeFunction.Arn'
+                Effect: Allow
+                Sid: AllowWriteToS3
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Principal:
+              Service: firehose.amazonaws.com
+            Effect: Allow
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+            Sid: ''
+
+  TransformChangeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  TransformChangeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      TracingConfig:
+        Mode: Active
+      Code: ./code/transform_change/
+      Description: Transform XML changes to JSON and split into feature records
+      MemorySize: 256
+      Handler: transform_change.lambda_handler
+      Role: !GetAtt 'TransformChangeFunctionRole.Arn'
+      Timeout: 60
+      Runtime: python3.6
+
+Outputs:
+
+  IngestStreamName:
+    Description: Firehose stream name
+    Value: !Ref IngestStream
+
+  IngestStreamArn:
+    Description: Firehose stream ARN
+    Value: !GetAtt IngestStream.Arn
