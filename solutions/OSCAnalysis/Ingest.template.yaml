@@ -123,6 +123,15 @@ Resources:
   DownloadOscFunctionRole:
     Type: AWS::IAM::Role
     Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
@@ -136,15 +145,7 @@ Resources:
                   - firehose:PutRecord*
                 Resource: !GetAtt 'IngestStream.Arn'
                 Effect: Allow
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action:
-              - sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
+
 
   DownloadOscFunction:
     Type: AWS::Lambda::Function
@@ -168,12 +169,35 @@ Resources:
   IngestStreamDeliveryRole:
     Type: AWS::IAM::Role
     Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Principal:
+              Service: firehose.amazonaws.com
+            Effect: Allow
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+            Sid: ''
       Policies:
-        - PolicyName: FirehoseDeliveryPolicy
+        - PolicyName: FirehoseLog
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Action:
+              - Sid: AllowWriteCloudWatchLog
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt DeliveryLogGroup.Arn
+        - PolicyName: FirehoseDelivery
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowWriteToS3
+                Effect: Allow
+                Action:
                   - s3:AbortMultipartUpload
                   - s3:GetBucketLocation
                   - s3:GetObject
@@ -186,43 +210,69 @@ Resources:
                     - /
                     - - !Ref BucketArn
                       - '*'
+        - PolicyName: AllowUseKey
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowUseKey
                 Effect: Allow
-                Sid: AllowWriteToS3
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action: sts:AssumeRole
-            Principal:
-              Service: firehose.amazonaws.com
-            Effect: Allow
-            Condition:
-              StringEquals:
-                sts:ExternalId: !Ref 'AWS::AccountId'
-            Sid: ''
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource:
+                  - !Ref KmsKeyArn
+              - Sid: AllowAttachmentPersistentResources
+                Effect: Allow
+                Action:
+                  - kms:CreateGrant
+                  - kms:ListGrants
+                  - kms:RevokeGrant
+                Resource:
+                  - !Ref KmsKeyArn
+                Condition:
+                  Bool:
+                    kms:GrantIsForAWSResource: "true"
+
+  DeliveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  DeliveryLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref DeliveryLogGroup
 
   IngestStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
       ExtendedS3DestinationConfiguration:
         RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref DeliveryLogGroup
+          LogStreamName: !Ref DeliveryLogStream
         CompressionFormat: GZIP
         BufferingHints:
           IntervalInSeconds: 60
           SizeInMBs: 5
         BucketARN: !Ref BucketArn
         Prefix: !Ref S3IngestPrefix
-#        EncryptionConfiguration:
-#          KMSEncryptionConfig:
-#            AWSKMSKeyARN: !Ref KmsKeyArn
+        EncryptionConfiguration:
+          KMSEncryptionConfig:
+            AWSKMSKeyARN: !Ref KmsKeyArn
         S3BackupMode: Enabled
         S3BackupConfiguration:
           CompressionFormat: GZIP
           RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
           BucketARN: !Ref BucketArn
           Prefix: !Ref S3IngestBackupPrefix
-#          EncryptionConfiguration:
-#            KMSEncryptionConfig:
-#              AWSKMSKeyARN: !Ref KmsKeyArn
+          EncryptionConfiguration:
+            KMSEncryptionConfig:
+              AWSKMSKeyARN: !Ref KmsKeyArn
           BufferingHints:
             IntervalInSeconds: 300
             SizeInMBs: 50

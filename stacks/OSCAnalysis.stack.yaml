@@ -1,7 +1,7 @@
 Stack:
   TemplateBody:         ../solutions/OSCAnalysis/Master.template.yaml
   Region:               us-west-2
-  StackName:            OSCAnalysisTestK
+  StackName:            OSCAnalysis
   Capabilities:         [CAPABILITY_IAM]
 
   Package:              True
@@ -11,4 +11,4 @@ Stack:
     enviornment:        production
 
   Parameters:
-    KmsKeyArn:          arn:aws:kms:us-west-2:889515947644:key/fe94ab5f-f381-4c3f-a6a0-83928c5e765d
+    KmsKeyArn:          arn:aws:kms:us-west-2:716160732812:key/115e0300-6fe4-4470-a0eb-845545693156
