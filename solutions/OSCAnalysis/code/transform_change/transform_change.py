@@ -8,11 +8,15 @@ print('Loading function')
 
 
 def transform_doc(doc):
-
     doc['timestamp'] = doc['timestamp'].replace('T', ' ')[:-1]
 
-    yield doc
+    for key in ['node_ref', 'node_member', 'way_member']:
+        try:
+            del doc[key]
+        except KeyError:
+            pass
 
+    yield doc
 
 def serialize_doc(doc):
     """Serialize JSON doc as utf-8"""
@@ -45,4 +49,3 @@ def lambda_handler(event, context):
     print('Successfully processed {} records.'.format(len(event['records'])))
 
     return {'records': output}
-
