@@ -103,8 +103,8 @@ def split_changes(fp):
 def serialize_doc(doc):
     """Serialize JSON doc as utf-8"""
     # one liner json
-    data = json.dumps(doc, ensure_ascii=False, indent=None)
-    payload = b'%b\n' % data.encode('utf-8')
+    data = json.dumps(doc, ensure_ascii=True, indent=None)
+    payload = b'%b\n' % data.encode('ascii')
     return payload
 
 

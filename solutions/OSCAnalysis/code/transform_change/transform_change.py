@@ -20,8 +20,8 @@ def transform_doc(doc):
 
 def serialize_doc(doc):
     """Serialize JSON doc as utf-8"""
-    data = json.dumps(doc, ensure_ascii=False, indent=None)
-    payload = b'%b\n' % data.encode('utf-8')
+    data = json.dumps(doc, ensure_ascii=True, indent=None)
+    payload = b'%b\n' % data.encode('ascii')
     return payload
 
 
@@ -33,7 +33,7 @@ def lambda_handler(event, context):
         payload = base64.b64decode(record['data'])
 
         # Do custom processing on the payload here
-        json_payload = json.loads(payload.decode('utf-8'))
+        json_payload = json.loads(payload.decode('ascii'))
 
         transformed_payload = b''.join(
             map(lambda doc: serialize_doc(doc),
