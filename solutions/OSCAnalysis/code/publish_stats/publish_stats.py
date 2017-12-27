@@ -14,9 +14,9 @@ try:
 except ImportError:
     print('Skipping aws_xray_sdk')
 
+cloudwatch = boto3.client('cloudwatch')
 
 def lambda_handler(event, context):
-    cloudwatch = boto3.client('cloudwatch')
 
     metric_data = []
 
@@ -28,19 +28,19 @@ def lambda_handler(event, context):
 
         # Use client generated time (changset time in OSM)
         timestamp = datetime.datetime.strptime(
-            payload['CLIENT_TIME'].split('.')[0],
+            payload['client_time'].split('.')[0],
             '%Y-%m-%d %H:%M:%S')
 
         data = dict(
-            MetricName=payload['CATEGORY'],
+            MetricName=payload['category'],
             Dimensions=[
                 dict(
                     Name='Group Name',
-                    Value=payload['GROUP_NAME']
+                    Value=payload['group_name']
                 ),
             ],
             Timestamp=timestamp,
-            Value=payload['ITEM_COUNT'],
+            Value=payload['item_count'],
             Unit='Count',
             StorageResolution=60
         )

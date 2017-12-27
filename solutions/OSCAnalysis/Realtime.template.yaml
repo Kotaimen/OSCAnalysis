@@ -1,10 +1,315 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Realtime data analysis
 
+Parameters:
+
+  KmsKeyArn:
+    Type: String
+    Description: KMS key ARN to encrypt data on rest.
+
+  IngestStreamArn:
+    Type: String
+    Description: Firehose ingest stream ARN
+
 Resources:
 
-  DummyGroup:
-    Type: "AWS::IAM::Group"
+  # === Kinesis Analytics Application  ===
 
+  AnalyticsAppInputRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kinesisanalytics.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: AnalyticsAppInputPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ReadInputFirehose
+                Effect: Allow
+                Action:
+                 - "firehose:DescribeDeliveryStream"
+                 - "firehose:Get*"
+                Resource:
+                  - !Ref IngestStreamArn
 
+  SteamingAnalyticsApp:
+    Type: "AWS::KinesisAnalytics::Application"
+    Properties:
+      Inputs:
+        - NamePrefix: "OSC"
+          KinesisFirehoseInput:
+            ResourceARN: !Ref IngestStreamArn
+            RoleARN: !GetAtt AnalyticsAppInputRole.Arn
+          InputSchema:
+            RecordFormat:
+              RecordFormatType: "JSON"
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: "$"
+            RecordColumns:
+              - Name: change
+                SqlType: "VARCHAR(16)"
+                Mapping: "$.change"
+              - Name: feature
+                SqlType: "VARCHAR(16)"
+                Mapping: "$.feature"
+              - Name: feature_id
+                SqlType: "BIGINT"
+                Mapping: "$.id"
+              - Name: feature_version
+                SqlType: "BIGINT"
+                Mapping: "$.version"
+              - Name: user_id
+                SqlType: "BIGINT"
+                Mapping: "$.uid"
+              - Name: user_name
+                SqlType: "VARCHAR(128)"
+                Mapping: "$.user"
+              - Name: changeset_id
+                SqlType: "BIGINT"
+                Mapping: "$.changeset"
+              - Name: change_time
+                SqlType: "TIMESTAMP"
+                Mapping: "$.timestamp"
+              - Name: lon
+                SqlType: "DOUBLE"
+                Mapping: "$.lon"
+              - Name: lat
+                SqlType: "DOUBLE"
+                Mapping: "$.lat"
+      ApplicationCode: |
+        CREATE OR REPLACE STREAM "NodesStream" (
+          "node_id" BIGINT,
+          "changeset_id" BIGINT,
+          "user_id" BIGINT,
+          "user_name" VARCHAR(128),
+          "lon" DOUBLE,
+          "lat" DOUBLE
+        );
 
+        CREATE OR REPLACE PUMP "NodesStreamPump" AS INSERT INTO "NodesStream"
+          SELECT STREAM
+            "feature_id" AS "node_id",
+            "changeset_id",
+            "user_id",
+            "user_name",
+            "lon",
+            "lat"
+          FROM OSC_001
+          WHERE "feature" = 'node'
+        ;
+
+        CREATE OR REPLACE STREAM "StatsStream" (
+          "group_name" VARCHAR(8),
+          "ingest_time" TIMESTAMP,
+          "client_time" TIMESTAMP,
+          "category" VARCHAR(16),
+          "item_count" BIGINT
+        );
+        CREATE OR REPLACE PUMP "StatsPump1" AS INSERT INTO "StatsStream"
+          SELECT STREAM
+            'Change' AS "group_name",
+            STEP("OSC_001".ROWTIME BY INTERVAL '60' SECOND),
+            STEP("OSC_001"."change_time" BY INTERVAL '60' SECOND) AS "client_time",
+            "change" AS "category",
+            COUNT(*) AS "item_count"
+          FROM "OSC_001"
+          GROUP BY
+            "change",
+            STEP("OSC_001".ROWTIME BY INTERVAL '60' SECOND),
+            STEP("OSC_001"."change_time" BY INTERVAL '60' SECOND)
+         UNION ALL
+         SELECT STREAM
+            'Feature' AS "group_name",
+            STEP("OSC_001".ROWTIME BY INTERVAL '60' SECOND),
+            STEP("OSC_001"."change_time" BY INTERVAL '60' SECOND) AS "client_time",
+            "feature" AS "category",
+            COUNT(*) AS "item_count"
+          FROM "OSC_001"
+          GROUP BY
+            "feature",
+            STEP("OSC_001".ROWTIME BY INTERVAL '60' SECOND),
+            STEP("OSC_001"."change_time" BY INTERVAL '60' SECOND)
+         ;
+
+  # === "Stats" Ouput - Write to CloudWatch Metrics ===
+
+  AnalyticsAppStatsOutputRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kinesisanalytics.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: AnalyticsAppStatsOuputPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowUseKey
+                Effect: Allow
+                Action:
+                 - "kms:GenerateDataKey"
+                Resource:
+                  - !Ref KmsKeyArn
+              - Sid: WriteStatsStream
+                Effect: Allow
+                Action:
+                 - "kinesis:DescribeStream"
+                 - "kinesis:PutRecord"
+                 - "kinesis:PutRecords"
+                Resource:
+                  - !GetAtt StatsOutputStream.Arn
+
+  AnalyticsAppStatsOutput:
+    Type: AWS::KinesisAnalytics::ApplicationOutput
+    Properties:
+      ApplicationName: !Ref SteamingAnalyticsApp
+      Output:
+        DestinationSchema:
+          RecordFormatType: JSON
+        KinesisStreamsOutput:
+          ResourceARN: !GetAtt 'StatsOutputStream.Arn'
+          RoleARN: !GetAtt 'AnalyticsAppStatsOutputRole.Arn'
+        Name: StatsStream
+
+  StatsOutputStream:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      RetentionPeriodHours: 24
+      ShardCount: 1
+
+  StatsOutputEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      EventSourceArn: !GetAtt 'StatsOutputStream.Arn'
+      FunctionName: !Ref 'StatsOutputPublishFunction'
+      StartingPosition: LATEST
+
+  StatsOutputPublishFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StatsOutputPublishFunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadKinesis
+                Effect: Allow
+                Action:
+                  - kinesis:DescribeStream
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                Resource: !GetAtt StatsOutputStream.Arn
+              - Sid: AllowUseKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Ref KmsKeyArn
+              - Sid: WriteMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  StatsOutputPublishFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      TracingConfig:
+        Mode: Active
+      Code: ./code/publish_stats/
+      MemorySize: 128
+      Handler: publish_stats.lambda_handler
+      Role: !GetAtt 'StatsOutputPublishFunctionRole.Arn'
+      Timeout: 30
+      Runtime: python3.6
+
+  StatsDashboard:
+    Type: "AWS::CloudWatch::Dashboard"
+    DependsOn: SteamingAnalyticsApp
+    Properties:
+      DashboardName: !Sub "${AWS::StackName}_Dashboard_${AWS::Region}"
+      DashboardBody:
+        Fn::Sub: |
+          {
+            "widgets": [
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 3,
+                "width": 21,
+                "height": 6,
+                "properties": {
+                  "view": "timeSeries",
+                  "stacked": true,
+                  "metrics": [
+                    [ "OSM/OSC", "create", "Group Name", "Change ", { "period": 300, "color": "#2ca02c" } ],
+                    [ ".", "delete", ".", ".", { "period": 300, "color": "#d62728" } ],
+                    [ ".", "modify", ".", ".", { "period": 300, "color": "#1f77b4" } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "period": 300,
+                  "title": "Change Type"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 9,
+                "width": 21,
+                "height": 6,
+                "properties": {
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "metrics": [
+                    [ "OSM/OSC", "node", "Group Name", "Feature", { "period": 60 } ],
+                    [ ".", "way", ".", ".", { "period": 60 } ],
+                    [ ".", "relation", ".", ".", { "period": 60 } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "period": 300,
+                  "title": "Feature Type"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 0,
+                "width": 21,
+                "height": 3,
+                "properties": {
+                  "view": "singleValue",
+                  "metrics": [
+                    [ "OSM/OSC", "create", "Group Name", "Change ", { "stat": "Sum", "period": 86400, "color": "#2ca02c" } ],
+                    [ ".", "delete", ".", ".", { "stat": "Sum", "period": 86400, "color": "#d62728" } ],
+                    [ ".", "modify", ".", ".", { "stat": "Sum", "period": 86400, "color": "#1f77b4" } ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "period": 300,
+                  "title": "Daily Changes"
+                }
+              }
+            ]
+          }

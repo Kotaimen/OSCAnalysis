@@ -71,11 +71,15 @@ Resources:
         S3IngestPrefix: !Ref S3IngestPrefix
         S3IngestBackupPrefix: !Ref S3IngestBackupPrefix
 
-#  RealtimeStack:
-#    Type: "AWS::CloudFormation::Stack"
-#    Properties:
-#      TemplateURL: Realtime.template.yaml
-#
+  RealtimeStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: Realtime.template.yaml
+      Parameters:
+        KmsKeyArn: !Ref KmsKeyArn
+        IngestStreamArn: !GetAtt IngestStack.Outputs.IngestStreamArn
+
+
 #  BatchStack:
 #    Type: "AWS::CloudFormation::Stack"
 #    Properties:
