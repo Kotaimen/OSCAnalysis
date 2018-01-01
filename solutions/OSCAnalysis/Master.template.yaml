@@ -19,7 +19,22 @@ Parameters:
     Description: S3 prefix for OSC update data backup.
       Stream.
     Type: String
-    Default: Vanilla/osm_change_backup/
+    Default: Vanilla/osc_change_backup/
+
+  NodesOutputPrefix:
+    Description: S3 prefix node output data
+    Type: String
+    Default: Staging/changed_nodes/
+
+  ElasticSearchAccessLocation:
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid CIDR range of the form x.x.x.x/x.
+    Default: 0.0.0.0/0
+    Description: Limit access to public elastic search cluster to specified
+      IP range
+    MaxLength: '18'
+    MinLength: '9'
+    Type: String
 
 Resources:
 
@@ -71,13 +86,16 @@ Resources:
         S3IngestPrefix: !Ref S3IngestPrefix
         S3IngestBackupPrefix: !Ref S3IngestBackupPrefix
 
-  RealtimeStack:
-    Type: "AWS::CloudFormation::Stack"
-    Properties:
-      TemplateURL: Realtime.template.yaml
-      Parameters:
-        KmsKeyArn: !Ref KmsKeyArn
-        IngestStreamArn: !GetAtt IngestStack.Outputs.IngestStreamArn
+#  RealtimeStack:
+#    Type: "AWS::CloudFormation::Stack"
+#    Properties:
+#      TemplateURL: Realtime.template.yaml
+#      Parameters:
+#        KmsKeyArn: !Ref KmsKeyArn
+#        IngestStreamArn: !GetAtt IngestStack.Outputs.IngestStreamArn
+#        BucketArn:  !GetAtt StorageBucket.Arn
+#        NodesOutputPrefix: !Ref NodesOutputPrefix
+#        ElasticSearchAccessLocation: !Ref ElasticSearchAccessLocation
 
 
 #  BatchStack:

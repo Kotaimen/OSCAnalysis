@@ -141,11 +141,11 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Action:
+              - Sid: AllowWriteToFirehose
+                Effect: Allow
+                Action:
                   - firehose:PutRecord*
                 Resource: !GetAtt 'IngestStream.Arn'
-                Effect: Allow
-
 
   DownloadOscFunction:
     Type: AWS::Lambda::Function
@@ -250,7 +250,7 @@ Resources:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
       ExtendedS3DestinationConfiguration:
-        RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+        RoleARN: !GetAtt IngestStreamDeliveryRole.Arn
         CloudWatchLoggingOptions:
           Enabled: true
           LogGroupName: !Ref DeliveryLogGroup

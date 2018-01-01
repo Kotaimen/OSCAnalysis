@@ -12,3 +12,4 @@ Stack:
 
   Parameters:
     KmsKeyArn:          arn:aws:kms:us-west-2:716160732812:key/115e0300-6fe4-4470-a0eb-845545693156
+    ElasticSearchAccessLocation: 13.230.121.124/32
