@@ -101,3 +101,7 @@ ENV/
 .mypy_cache/
 
 .idea/
+
+solutions/OSCAnalysis/code/*.zip
+solutions/OSCAnalysis/code/aws_xray_sdk
+solutions/OSCAnalysis/code/test_data/*
