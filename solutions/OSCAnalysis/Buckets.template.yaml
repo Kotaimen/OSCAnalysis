@@ -130,6 +130,12 @@ Outputs:
     Export:
       Name: !Sub ${AWS::StackName}:VanillaObjectCreatedTopicArn
 
+  CuratedBucketName:
+    Description: Curated bucket name
+    Value: !Ref CuratedBucket
+    Export:
+      Name: !Sub ${AWS::StackName}:CuratedBucketName
+
   CuratedBucketArn:
     Description: Curated bucket ARN
     Value: !GetAtt CuratedBucket.Arn
@@ -142,11 +148,23 @@ Outputs:
     Export:
       Name: !Sub ${AWS::StackName}:CuratedObjectCreatedTopicArn
 
+  StagingBucketName:
+    Description: Staging bucket name
+    Value: !Ref StagingBucket
+    Export:
+      Name: !Sub ${AWS::StackName}:StagingBucketName
+
   StagingBucketArn:
     Description: Staging bucket ARN
     Value: !GetAtt StagingBucket.Arn
     Export:
       Name: !Sub ${AWS::StackName}:StagingBucketArn
+
+  PublishedBucketName:
+    Description: Published bucket name
+    Value: !Ref PublishedBucket
+    Export:
+      Name: !Sub ${AWS::StackName}:PublishedBucketName
 
   PublishedBucketArn:
     Description: Published bucket ARN

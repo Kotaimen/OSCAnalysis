@@ -32,5 +32,7 @@ ingest:
 		--stack-name OscAnalysis3-Ingest \
 		--parameter-overrides \
 			KmsKeyArn=${KMS_KEY_ARN} \
-			DatalakeStack=${DATALAKE_STACK_NAME}; \
+			DatalakeStack=${DATALAKE_STACK_NAME} \
+			S3Prefix=openstreetmap/replication; \
 
+#deploy: datalake ingest

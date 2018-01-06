@@ -3,6 +3,7 @@
 import json
 import tempfile
 import gzip
+import os
 import urllib.parse
 import xml.etree.cElementTree as etree
 
@@ -12,6 +13,10 @@ print('Loading function')
 
 # === Globals ===
 s3 = boto3.client('s3')
+firehose = boto3.client('firehose')
+
+FIREHOSE_STREAM_NAME = os.getenv('FIREHOSE_STREAM_NAME', None)
+assert FIREHOSE_STREAM_NAME is not None
 
 
 def split_changes(fp):
@@ -133,7 +138,10 @@ def on_object_created(s3_object):
         fp.seek(0)
         with gzip.GzipFile(fileobj=fp, mode='r') as gzfp:
             for record_batch in make_batch(gzfp):
-                pass
+                firehose.put_record_batch(
+                    DeliveryStreamName=FIREHOSE_STREAM_NAME,
+                    Records=record_batch
+                )
 
 
 def lambda_handler(event, context):

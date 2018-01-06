@@ -8,15 +8,24 @@ Parameters:
     Type: String
     Description: KMS key ARN to encrypt data on rest.
 
+  S3Prefix:
+    Type: String
+    Description: S3 storage prefix
+    Default: openstreetmap/replication
+
   DatalakeStack:
     Type: String
     Description: Datalake buckets stack name
 
-
 Resources:
+
+  # === SAM ===
 
   IngestOscFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      # wait until consumer is created
+      - ProcessOscFunction
     Properties:
       Runtime: python3.6
       CodeUri: ./lambdas/ingest_osc/
@@ -42,6 +51,7 @@ Resources:
           BUCKET_NAME:
             Fn::ImportValue:
               !Sub ${DatalakeStack}:VanillaBucketName
+          S3_PREFIX: !Ref S3Prefix
 
   ProcessOscFunction:
     Type: AWS::Serverless::Function
@@ -56,6 +66,12 @@ Resources:
             BucketName:
               Fn::ImportValue:
                 !Sub ${DatalakeStack}:VanillaBucketName
+        - Version: '2012-10-17'
+          Statement:
+            - Action:
+                - firehose:PutRecord*
+              Resource: !GetAtt 'IngestStream.Arn'
+              Effect: Allow
       Events:
         BucketObjectCreated:
           Type: SNS
@@ -63,3 +79,209 @@ Resources:
             Topic:
               Fn::ImportValue:
                 !Sub ${DatalakeStack}:VanillaObjectCreatedTopicArn
+      Environment:
+        Variables:
+          FIREHOSE_STREAM_NAME: !Ref 'IngestStream'
+
+  TransformChangeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.6
+      CodeUri: ./lambdas/transform_change/
+      Timeout: 60
+      MemorySize: 128
+      Handler: transform_change.lambda_handler
+
+  # === Firehose ===
+
+  DeliveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  DeliveryLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref DeliveryLogGroup
+
+  IngestStreamDeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Principal:
+              Service: firehose.amazonaws.com
+            Effect: Allow
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+            Sid: ''
+      Policies:
+        - PolicyName: FirehoseLog
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowWriteCloudWatchLog
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt DeliveryLogGroup.Arn
+        - PolicyName: FirehoseDelivery
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowWriteToS3
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - Fn::ImportValue:
+                      !Sub ${DatalakeStack}:CuratedBucketArn
+                  - !Join
+                    - /
+                    - - Fn::ImportValue:
+                          !Sub ${DatalakeStack}:CuratedBucketArn
+                      - '*'
+        - PolicyName: AllowUseKey
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowUseKey
+                Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource:
+                  - !Ref KmsKeyArn
+              - Sid: AllowAttachmentPersistentResources
+                Effect: Allow
+                Action:
+                  - kms:CreateGrant
+                  - kms:ListGrants
+                  - kms:RevokeGrant
+                Resource:
+                  - !Ref KmsKeyArn
+                Condition:
+                  Bool:
+                    kms:GrantIsForAWSResource: "true"
+
+  IngestStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref DeliveryLogGroup
+          LogStreamName: !Ref DeliveryLogStream
+        CompressionFormat: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        BucketARN:
+          Fn::ImportValue:
+            !Sub ${DatalakeStack}:CuratedBucketArn
+        Prefix:
+          Fn::Join:
+            - /
+            - - !Ref S3Prefix
+              - changes/
+        EncryptionConfiguration:
+          KMSEncryptionConfig:
+            AWSKMSKeyARN: !Ref KmsKeyArn
+        S3BackupMode: Enabled
+        S3BackupConfiguration:
+          CompressionFormat: GZIP
+          RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
+          BucketARN:
+            Fn::ImportValue:
+              !Sub ${DatalakeStack}:CuratedBucketArn
+          Prefix:
+            Fn::Join:
+              - /
+              - - !Ref S3Prefix
+                - changes_backup/
+          EncryptionConfiguration:
+            KMSEncryptionConfig:
+              AWSKMSKeyARN: !Ref KmsKeyArn
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 50
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt 'TransformChangeFunction.Arn'
+                - ParameterName: NumberOfRetries
+                  ParameterValue: 3
+                - ParameterName: RoleArn
+                  ParameterValue: !GetAtt 'IngestStreamTransformInvokeRole.Arn'
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: 3
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: 60
+      DeliveryStreamType: DirectPut
+
+  IngestStreamTransformInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Action: sts:AssumeRole
+            Principal:
+              Service: firehose.amazonaws.com
+            Effect: Allow
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: LambdaInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt 'TransformChangeFunction.Arn'
+                Effect: Allow
+                Sid: AllowWriteToS3
+
+
+Outputs:
+
+  IngestStreamName:
+    Description: Firehose stream name
+    Value: !Ref IngestStream
+    Export:
+      Name: !Sub ${AWS::StackName}:IngestStreamName
+
+  IngestStreamArn:
+    Description: Firehose stream ARN
+    Value: !GetAtt IngestStream.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}:IngestStreamArn
+
+  ChangePrefix:
+    Description: Stream
+    Value:
+      Fn::Join:
+        - /
+        - - !Ref S3Prefix
+          - changes
+    Export:
+      Name: !Sub ${AWS::StackName}:ChangePrefix

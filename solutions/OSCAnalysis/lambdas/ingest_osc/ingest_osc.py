@@ -15,7 +15,6 @@ print('Loading function')
 
 # === Constants ===
 OSM_REPLICATOIN_ROOT = 'http://planet.openstreetmap.org/replication'
-S3_PREFIX = 'openstreetmap/replication'
 
 # === Globals ===
 s3 = boto3.client('s3')
@@ -24,6 +23,7 @@ session = requests
 bucket_name = os.getenv('BUCKET_NAME')
 assert bucket_name is not None
 
+s3_prefix = os.getenv('S3_PREFIX', 'openstreetmap/replication')
 
 def get_latest_sequence(root_url, interval):
     """#Fri Nov 10 03:02:09 UTC 2017
@@ -74,6 +74,6 @@ def lambda_handler(event, context):
 
     # prepare resources
     osc_url = '{}/{}/{}.osc.gz'.format(OSM_REPLICATOIN_ROOT, interval, path)
-    osc_key = '{}/{}/{}.osc.gz'.format(S3_PREFIX, interval, path)
+    osc_key = '{}/{}/{}.osc.gz'.format(s3_prefix, interval, path)
 
     upload_url_to_s3(session, osc_url, bucket_name, osc_key)
