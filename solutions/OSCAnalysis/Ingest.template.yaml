@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: "2010-09-09"
-Description: Data ingestion
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OSC data ingestation
+Transform: 'AWS::Serverless-2016-10-31'
 
 Parameters:
 
@@ -7,353 +8,58 @@ Parameters:
     Type: String
     Description: KMS key ARN to encrypt data on rest.
 
-  BucketArn:
+  DatalakeStack:
     Type: String
-    Description: Storage bucket ARN
+    Description: Datalake buckets stack name
 
-  S3IngestPrefix:
-    Description: S3 prefix for OSC data ingested by Kinesis Firehose
-      Stream.
-    Type: String
-
-  S3IngestBackupPrefix:
-    Description: S3 prefix for OSC update data backup.
-      Stream.
-    Type: String
 
 Resources:
 
-  # === DDB ===
-
-  OscStatesTable:
-    Type: AWS::DynamoDB::Table
+  IngestOscFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      KeySchema:
-        - KeyType: HASH
-          AttributeName: seq
-      StreamSpecification:
-        StreamViewType: NEW_IMAGE
-      AttributeDefinitions:
-        - AttributeName: seq
-          AttributeType: N
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-      ProvisionedThroughput:
-        WriteCapacityUnits: 5
-        ReadCapacityUnits: 5
-
-  # === Check OSC state every minute and write to DDB ===
-
-  CheckStateFunctionTimerPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:invokeFunction
-      Principal: events.amazonaws.com
-      FunctionName: !Ref 'CheckStateFunction'
-      SourceArn: !GetAtt 'CheckStateFunctionTimer.Arn'
-
-  CheckStateFunctionTimer:
-    Type: AWS::Events::Rule
-    Properties:
-      ScheduleExpression: rate(1 minute)
-      Targets:
-        - Id: CheckStateFunctionTimerLambdaTarget
-          Arn: !GetAtt 'CheckStateFunction.Arn'
-
-  CheckStateFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: CheckStateFunctionRolePolicy1
-          PolicyDocument:
-            Statement:
-              - Action:
-                  - dynamodb:GetItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:PutItem
-                  - dynamodb:Scan
-                  - dynamodb:Query
-                  - dynamodb:UpdateItem
-                  - dynamodb:BatchWriteItem
-                  - dynamodb:BatchGetItem
-                Resource: !Sub
-                  - arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tableName}
-                  - tableName: !Ref 'OscStatesTable'
-                Effect: Allow
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action:
-              - sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-
-  CheckStateFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      TracingConfig:
-        Mode: Active
-      Code: ./code/check_state/
-      Description: Check OSC state and store in DDB
-      MemorySize: 128
-      Environment:
-        Variables:
-          OSC_TABLE_NAME: !Ref 'OscStatesTable'
-      Handler: check_state.lambda_handler
-      Role: !GetAtt 'CheckStateFunctionRole.Arn'
-      Timeout: 30
       Runtime: python3.6
-
-  # === Download OSC and write to Firehose ===
-
-  DownloadOscFunctionTimer:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      BatchSize: 1
-      EventSourceArn: !GetAtt 'OscStatesTable.StreamArn'
-      FunctionName: !Ref 'DownloadOscFunction'
-      StartingPosition: TRIM_HORIZON
-
-  DownloadOscFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action:
-              - sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole
-      Policies:
-        - PolicyName: DownloadOscFunctionRolePolicy1
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: AllowWriteToFirehose
-                Effect: Allow
-                Action:
-                  - firehose:PutRecord*
-                Resource: !GetAtt 'IngestStream.Arn'
-
-  DownloadOscFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      TracingConfig:
-        Mode: Active
-      Code: ./code/download_osc/
-      Description: Download OSC data and split into change fragments then write to
-        Firehose
-      MemorySize: 128
-      Environment:
-        Variables:
-          FIREHOSE_STREAM_NAME: !Ref 'IngestStream'
-      Handler: download_osc.lambda_handler
-      Role: !GetAtt 'DownloadOscFunctionRole.Arn'
-      Timeout: 30
-      Runtime: python3.6
-
-  # === Firehose ===
-
-  IngestStreamDeliveryRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action: sts:AssumeRole
-            Principal:
-              Service: firehose.amazonaws.com
-            Effect: Allow
-            Condition:
-              StringEquals:
-                sts:ExternalId: !Ref 'AWS::AccountId'
-            Sid: ''
-      Policies:
-        - PolicyName: FirehoseLog
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: AllowWriteCloudWatchLog
-                Effect: Allow
-                Action:
-                  - logs:PutLogEvents
-                Resource:
-                  - !GetAtt DeliveryLogGroup.Arn
-        - PolicyName: FirehoseDelivery
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: AllowWriteToS3
-                Effect: Allow
-                Action:
-                  - s3:AbortMultipartUpload
-                  - s3:GetBucketLocation
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:ListBucketMultipartUploads
-                  - s3:PutObject
-                Resource:
-                  - !Ref BucketArn
-                  - !Join
-                    - /
-                    - - !Ref BucketArn
-                      - '*'
-        - PolicyName: AllowUseKey
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: AllowUseKey
-                Effect: Allow
-                Action:
-                  - kms:Encrypt
-                  - kms:Decrypt
-                  - kms:ReEncrypt*
-                  - kms:GenerateDataKey*
-                  - kms:DescribeKey
-                Resource:
-                  - !Ref KmsKeyArn
-              - Sid: AllowAttachmentPersistentResources
-                Effect: Allow
-                Action:
-                  - kms:CreateGrant
-                  - kms:ListGrants
-                  - kms:RevokeGrant
-                Resource:
-                  - !Ref KmsKeyArn
-                Condition:
-                  Bool:
-                    kms:GrantIsForAWSResource: "true"
-
-  DeliveryLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      RetentionInDays: 7
-
-  DeliveryLogStream:
-    Type: AWS::Logs::LogStream
-    Properties:
-      LogGroupName: !Ref DeliveryLogGroup
-
-  IngestStream:
-    Type: AWS::KinesisFirehose::DeliveryStream
-    Properties:
-      ExtendedS3DestinationConfiguration:
-        RoleARN: !GetAtt IngestStreamDeliveryRole.Arn
-        CloudWatchLoggingOptions:
-          Enabled: true
-          LogGroupName: !Ref DeliveryLogGroup
-          LogStreamName: !Ref DeliveryLogStream
-        CompressionFormat: GZIP
-        BufferingHints:
-          IntervalInSeconds: 60
-          SizeInMBs: 5
-        BucketARN: !Ref BucketArn
-        Prefix: !Ref S3IngestPrefix
-        EncryptionConfiguration:
-          KMSEncryptionConfig:
-            AWSKMSKeyARN: !Ref KmsKeyArn
-        S3BackupMode: Enabled
-        S3BackupConfiguration:
-          CompressionFormat: GZIP
-          RoleARN: !GetAtt 'IngestStreamDeliveryRole.Arn'
-          BucketARN: !Ref BucketArn
-          Prefix: !Ref S3IngestBackupPrefix
-          EncryptionConfiguration:
-            KMSEncryptionConfig:
-              AWSKMSKeyARN: !Ref KmsKeyArn
-          BufferingHints:
-            IntervalInSeconds: 300
-            SizeInMBs: 50
-        ProcessingConfiguration:
-          Enabled: true
-          Processors:
-            - Type: Lambda
-              Parameters:
-                - ParameterName: LambdaArn
-                  ParameterValue: !GetAtt 'TransformChangeFunction.Arn'
-                - ParameterName: NumberOfRetries
-                  ParameterValue: 3
-                - ParameterName: RoleArn
-                  ParameterValue: !GetAtt 'IngestStreamTransformInvokeRole.Arn'
-                - ParameterName: BufferSizeInMBs
-                  ParameterValue: 3
-                - ParameterName: BufferIntervalInSeconds
-                  ParameterValue: 60
-      DeliveryStreamType: DirectPut
-
-  IngestStreamTransformInvokeRole:
-    Type: AWS::IAM::Role
-    Properties:
-      Policies:
-        - PolicyName: LambdaInvokePolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Action:
-                  - lambda:InvokeFunction
-                Resource:
-                  - !GetAtt 'TransformChangeFunction.Arn'
-                Effect: Allow
-                Sid: AllowWriteToS3
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action: sts:AssumeRole
-            Principal:
-              Service: firehose.amazonaws.com
-            Effect: Allow
-            Condition:
-              StringEquals:
-                sts:ExternalId: !Ref 'AWS::AccountId'
-            Sid: ''
-
-  TransformChangeFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Action:
-              - sts:AssumeRole
-            Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-
-  TransformChangeFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      TracingConfig:
-        Mode: Active
-      Code: ./code/transform_change/
-      Description: Transform XML changes to JSON and split into feature records
-      MemorySize: 256
-      Handler: transform_change.lambda_handler
-      Role: !GetAtt 'TransformChangeFunctionRole.Arn'
+      CodeUri: ./lambdas/ingest_osc/
       Timeout: 60
+      MemorySize: 128
+      Handler: ingest_osc.lambda_handler
+      Policies:
+        - S3CrudPolicy:
+            BucketName:
+              Fn::ImportValue:
+                !Sub ${DatalakeStack}:VanillaBucketName
+      Events:
+        MinuteTimer:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Input: |
+              {
+                "interval": "minute"
+              }
+      Environment:
+        Variables:
+          BUCKET_NAME:
+            Fn::ImportValue:
+              !Sub ${DatalakeStack}:VanillaBucketName
+
+  ProcessOscFunction:
+    Type: AWS::Serverless::Function
+    Properties:
       Runtime: python3.6
-
-Outputs:
-
-  IngestStreamName:
-    Description: Firehose stream name
-    Value: !Ref IngestStream
-
-  IngestStreamArn:
-    Description: Firehose stream ARN
-    Value: !GetAtt IngestStream.Arn
+      CodeUri: ./lambdas/process_osc/
+      Timeout: 60
+      MemorySize: 128
+      Handler: process_osc.lambda_handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName:
+              Fn::ImportValue:
+                !Sub ${DatalakeStack}:VanillaBucketName
+      Events:
+        BucketObjectCreated:
+          Type: SNS
+          Properties:
+            Topic:
+              Fn::ImportValue:
+                !Sub ${DatalakeStack}:VanillaObjectCreatedTopicArn

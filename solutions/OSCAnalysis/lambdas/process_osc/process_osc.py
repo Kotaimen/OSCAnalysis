@@ -1,43 +1,18 @@
 # -*- encoding: utf-8 -*-
 
-
-import io
-import gzip
 import json
-import os
+import tempfile
+import gzip
+import urllib.parse
 import xml.etree.cElementTree as etree
 
 import boto3
 
 print('Loading function')
 
-try:
-    import requests
-except ImportError:
-    import botocore.vendored.requests as requests
+# === Globals ===
+s3 = boto3.client('s3')
 
-
-# Try to patch all supported libraries for x-ray
-try:
-    from aws_xray_sdk.core import patch_all
-    patch_all()
-except ImportError:
-    print('Skipping aws_xray_sdk')
-
-
-#
-# Load globals from environment
-#
-
-FIREHOSE_STREAM_NAME = os.getenv('FIREHOSE_STREAM_NAME', None)
-assert FIREHOSE_STREAM_NAME is not None
-
-FIREHOSE_CLIENT = boto3.client('firehose')
-
-
-#
-# Functions
-#
 
 def split_changes(fp):
     """ Split OSC change into json documents
@@ -151,30 +126,33 @@ def make_batch(fp, batch_limit=500,
         yield records
 
 
-#
-# Entry
-#
+def on_object_created(s3_object):
+    with tempfile.TemporaryFile(mode='w+b') as fp:
+        # XXX: lambda temporary disk size is is 512MB
+        s3.download_fileobj(s3_object['bucket'], s3_object['key'], fp)
+        fp.seek(0)
+        with gzip.GzipFile(fileobj=fp, mode='r') as gzfp:
+            for record_batch in make_batch(gzfp):
+                pass
+
+
 def lambda_handler(event, context):
-    # print("Received event: " + json.dumps(event, indent=2))
+    print("Received event: " + json.dumps(event))
 
-    # DDB streaming events
     for record in event['Records']:
-        # print(record)
+        messages = json.loads(record['Sns']['Message'])
 
-        if record['eventName'] != 'INSERT':  # only deal with insert events
-            continue
+        for message in messages['Records']:
 
-        url = record['dynamodb']['NewImage']['url']['S']
+            if message['eventSource'] != 'aws:s3' or \
+                    not message['eventName'].startswith('ObjectCreated:'):
+                print('Skipdping non s3 object creation message %r' % message)
+                continue
 
-        print('Downloading from:', url)
+            payload = message['s3']['object']
+            payload['bucket'] = message['s3']['bucket']['name']
+            payload['key'] = urllib.parse.unquote_plus(payload['key'])
 
-        response = requests.get(url)
-        with gzip.GzipFile(fileobj=io.BytesIO(response.content),
-                           mode='r') as fp:
-            for record_batch in make_batch(fp):
-                FIREHOSE_CLIENT.put_record_batch(
-                    DeliveryStreamName=FIREHOSE_STREAM_NAME,
-                    Records=record_batch
-                )
-
-    return 'Successfully processed {} records.'.format(len(event['Records']))
+            print('Received s3 object creation event')
+            print(payload)
+            on_object_created(payload)

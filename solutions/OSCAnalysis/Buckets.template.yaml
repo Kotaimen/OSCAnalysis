@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Data storage buckets and object notifications.
+
+Parameters:
+  # Unused until cfn supports default encryption
+  KmsKeyArn:
+    Type: String
+    Description: KMS key ARN to encrypt data on rest.
+
+Resources:
+
+  # === "Vanilla" for raw ingested data ===
+
+  VanillaObjectCreatedTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: VanillaObjectCreated
+
+  VanillaTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref VanillaObjectCreatedTopic
+      PolicyDocument:
+        Id: TopicPolicy
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPublishToTopic
+            Effect: Allow
+            Principal:
+              Service: !Sub 's3.${AWS::URLSuffix}'
+            Action:
+              - sns:Publish
+            Resource: !Ref VanillaObjectCreatedTopic
+            Condition:
+              # Relax conditions to break circular dependency between
+              # bucket and sns policy, note this allows ANY bucket in
+              # current account send notifications.
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              StringLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:s3:*:*:*'
+
+  VanillaBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - VanillaTopicPolicy
+    Properties:
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref VanillaObjectCreatedTopic
+            Filter:
+              S3Key:
+                Rules:
+                 - Name: prefix
+                   Value: openstreetmap/replication
+                 - Name: suffix
+                   Value: .osc.gz
+#      VersioningConfiguration:
+#        Status: Enabled
+
+  # === "Curated" for organized ingest data ===
+
+  CuratedObjectCreatedTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: StagingObjectCreated
+
+  CuratedTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref CuratedObjectCreatedTopic
+      PolicyDocument:
+        Id: TopicPolicy
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPublishToTopic
+            Effect: Allow
+            Principal:
+              Service: !Sub 's3.${AWS::URLSuffix}'
+            Action:
+              - sns:Publish
+            Resource: !Ref CuratedObjectCreatedTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:s3:*:*:*'
+
+  CuratedBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - CuratedTopicPolicy
+    Properties:
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref CuratedObjectCreatedTopic
+
+  # === Intermediate results ===
+
+  StagingBucket:
+    Type: AWS::S3::Bucket
+
+  # === Published results ===
+
+  PublishedBucket:
+    Type: AWS::S3::Bucket
+
+
+Outputs:
+
+  VanillaBucketName:
+    Description: Vanilla bucket name
+    Value: !Ref VanillaBucket
+    Export:
+      Name: !Sub ${AWS::StackName}:VanillaBucketName
+
+  VanillaBucketArn:
+    Description: Vanilla bucket ARN
+    Value: !GetAtt VanillaBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}:VanillaBucketArn
+
+  VanillaObjectCreatedTopicArn:
+    Description: Vanilla bucket topic ARN
+    Value: !Ref VanillaObjectCreatedTopic
+    Export:
+      Name: !Sub ${AWS::StackName}:VanillaObjectCreatedTopicArn
+
+  CuratedBucketArn:
+    Description: Curated bucket ARN
+    Value: !GetAtt CuratedBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}:CuratedBucketArn
+
+  CuratedObjectCreatedTopicArn:
+    Description: Curated bucket topic ARN
+    Value: !Ref CuratedObjectCreatedTopic
+    Export:
+      Name: !Sub ${AWS::StackName}:CuratedObjectCreatedTopicArn
+
+  StagingBucketArn:
+    Description: Staging bucket ARN
+    Value: !GetAtt StagingBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}:StagingBucketArn
+
+  PublishedBucketArn:
+    Description: Published bucket ARN
+    Value: !GetAtt PublishedBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}:PublishedBucketArn
