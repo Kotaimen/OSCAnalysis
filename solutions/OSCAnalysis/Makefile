@@ -3,8 +3,8 @@ AWS_PROFILE=demo
 AWS_REGION=us-west-2
 ARTIFACT_BUCKET_NAME=awscfncli-716160732812-us-west-2
 
-
-KMS_KEY_ARN=arn:aws:kms:us-west-2:716160732812:key/115e0300-6fe4-4470-a0eb-845545693156
+# aws/s3 key arn
+KMS_KEY_ARN=arn:aws:kms:us-west-2:716160732812:key/8f55e6ac-35f6-4a06-bf5b-767620a812f4
 
 DATALAKE_STACK_NAME=OscAnalysis3-DataLake
 
@@ -32,7 +32,6 @@ ingest:
 		--stack-name OscAnalysis3-Ingest \
 		--parameter-overrides \
 			KmsKeyArn=${KMS_KEY_ARN} \
-			DatalakeStack=${DATALAKE_STACK_NAME} \
-			S3Prefix=openstreetmap/replication; \
+			DatalakeStack=${DATALAKE_STACK_NAME};
 
 #deploy: datalake ingest
