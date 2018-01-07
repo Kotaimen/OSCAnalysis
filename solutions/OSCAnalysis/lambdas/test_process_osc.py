@@ -10,10 +10,13 @@ import moto
 # insert lambda package path
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'process_osc'))
 
+# inject lambda envrionment variables
+os.environ['FIREHOSE_STREAM_NAME'] = 'fatray'
+
 from process_osc import lambda_handler
 
 BUCKET_NAME = 'boba'
-OSC_FILENAME=os.path.join('test_data/', 'hour001.osc.gz')
+OSC_FILENAME = os.path.join('test_data/', 'hour001.osc.gz')
 
 OSC_PREFIX = 'replication/hour/000/000/001.osc.gz'
 
@@ -84,9 +87,25 @@ SAMPLE_EVENT = \
 
 
 @moto.mock_s3
+@moto.mock_kinesis
 def test_lambda_handler():
     s3 = boto3.client('s3')
     s3.create_bucket(Bucket=BUCKET_NAME)
-    s3.upload_file(OSC_FILENAME,BUCKET_NAME,OSC_PREFIX,)
-    lambda_handler(SAMPLE_EVENT, {})
+    s3.upload_file(OSC_FILENAME, BUCKET_NAME, OSC_PREFIX)
 
+    firehose = boto3.client('firehose')
+    firehose.create_delivery_stream(
+        DeliveryStreamName=os.environ['FIREHOSE_STREAM_NAME'],
+        DeliveryStreamType='DirectPut',
+        S3DestinationConfiguration={
+            'BucketARN': '1',
+            'Prefix': '/',
+            'RoleARN': '1',
+            'BufferingHints': {
+                'SizeInMBs': 123,
+                'IntervalInSeconds': 123
+            },
+        }
+    )
+
+    lambda_handler(SAMPLE_EVENT, {})
