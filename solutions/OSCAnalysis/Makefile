@@ -34,4 +34,20 @@ ingest:
 			KmsKeyArn=${KMS_KEY_ARN} \
 			DatalakeStack=${DATALAKE_STACK_NAME};
 
+etl: ETL.template.yaml
+	aws cloudformation deploy \
+		--profile ${AWS_PROFILE} \
+		--region ${AWS_REGION} \
+		--capabilities CAPABILITY_IAM \
+		--template-file ETL.template.yaml \
+		--stack-name OscAnalysis3-ETL \
+		--parameter-overrides \
+			KmsKeyArn=${KMS_KEY_ARN} \
+			CuratedDatabaseName=oscanalysis3-curated-database \
+			StagingDatabaseName=oscanalysis3-staging-database \
+			OscCuratedPrefix=openstreetmap/replication/changes \
+			DatalakeStack=${DATALAKE_STACK_NAME};
+
+
+
 #deploy: datalake ingest

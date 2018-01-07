@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Batch data analysis
+
+Parameters:
+
+  DatalakeStack:
+    Type: String
+    Description: Datalake buckets stack name
+  CuratedDatabaseName:
+    Type: String
+    Description: Name of the curated database
+    AllowedPattern: "[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\t]*"
+  StagingDatabaseName:
+    Type: String
+    Description: Name of the staging database
+    AllowedPattern: "[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\t]*"
+  OscCuratedPrefix:
+    Type: String
+    Description: S3 Prefix of the Open Street Map change source in curated bucket.
+  KmsKeyArn:
+    Type: String
+    Description: KMS key ARN to encrypt data on rest.
+
+Resources:
+  CuratedDatabase:
+    Type: "AWS::Glue::Database"
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref CuratedDatabaseName
+        Description: !Sub "${CuratedDatabaseName} in Stack ${AWS::StackName}"
+
+  StagingDatabase:
+    Type: "AWS::Glue::Database"
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref StagingDatabaseName
+        Description: !Sub "${StagingDatabaseName} in Stack ${AWS::StackName}"
+
+  AllowUseKmsKeyPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: "Policy for accessing Kms Key"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowUseKey
+            Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource:
+              - !Ref KmsKeyArn
+          - Sid: AllowAttachmentPersistentResources
+            Effect: Allow
+            Action:
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:RevokeGrant
+            Resource:
+              - !Ref KmsKeyArn
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: "true"
+
+  OscCuratedCrawlerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+             Service: "glue.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+        - !Ref AllowUseKmsKeyPolicy
+
+  OscCuratedCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      DatabaseName: !Ref CuratedDatabase
+      Role: !GetAtt OscCuratedCrawlerRole.Arn
+      TablePrefix: 'osc/'
+      Targets:
+        S3Targets:
+          - Path: !Sub
+            - "s3://${CuratedBucket}/${OscCuratedPrefix}"
+            - CuratedBucket:
+                Fn::ImportValue:
+                  !Sub "${DatalakeStack}:CuratedBucketName"
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: DEPRECATE_IN_DATABASE
+
+  OscETLJobRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+             Service: "glue.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+        - !Ref AllowUseKmsKeyPolicy
+
+  OscETLJob:
+    Type: "AWS::Glue::Job"
+    Properties:
+      Role: !GetAtt OscETLJobRole.Arn
+      Description:  "Transform to Parquet format"
+      Command:
+        Name: glueetl
+        ScriptLocation: "s3://aws-glue-scripts-716160732812-us-west-2/osc.py"
+      DefaultArguments:
+        --source_database: !Ref CuratedDatabaseName
+        --target_database: !Ref StagingDatabaseName
