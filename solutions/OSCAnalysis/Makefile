@@ -1,4 +1,4 @@
-
+# global paremeters
 AWS_PROFILE=demo
 AWS_REGION=us-west-2
 ARTIFACT_BUCKET_NAME=awscfncli-716160732812-us-west-2
@@ -16,12 +16,12 @@ datalake: Buckets.template.yaml
 		--stack-name ${DATALAKE_STACK_NAME} \
 		--parameter-overrides KmsKeyArn=${KMS_KEY_ARN}
 
-ingest:
+ingest: Ingest.template.yaml
 	output_template_file=$$(mktemp); \
 	aws cloudformation package \
 		--profile ${AWS_PROFILE} \
 		--region ${AWS_REGION} \
-		--template-file Ingest.template.yaml \
+		--template-file $^ \
 		--s3-bucket ${ARTIFACT_BUCKET_NAME} \
 		--output-template-file $${output_template_file}; \
 	aws cloudformation deploy \
@@ -48,6 +48,23 @@ etl: ETL.template.yaml
 			OscCuratedPrefix=openstreetmap/replication/changes \
 			DatalakeStack=${DATALAKE_STACK_NAME};
 
-
+redshift: Redshift.template.yaml
+	aws cloudformation deploy \
+		--profile ${AWS_PROFILE} \
+		--region ${AWS_REGION} \
+		--capabilities CAPABILITY_IAM \
+		--template-file $^ \
+		--stack-name OscAnalysis3-Redshift \
+		--parameter-overrides \
+			DatabaseName=osc \
+			PubliclyAccessible=true \
+			RedshiftInboundCIDR=180.168.157.96/28 \
+			RedshiftUsername=awsuser \
+			RedshiftPassword=Cheeseshop123 \
+			VpcId=vpc-47278d21 \
+			SubnetId1=subnet-9a8515c1 \
+			SubnetId2=subnet-61dcc228 \
+			DatalakeStack=${DATALAKE_STACK_NAME} \
+			;
 
 #deploy: datalake ingest
