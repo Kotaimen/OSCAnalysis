@@ -17,6 +17,9 @@ Parameters:
   OscCuratedPrefix:
     Type: String
     Description: S3 Prefix of the Open Street Map change source in curated bucket.
+  OscStagingPrefix:
+    Type: String
+    Description: S3 Prefix of the Open Street Map change source in staging bucket.
   KmsKeyArn:
     Type: String
     Description: KMS key ARN to encrypt data on rest.
@@ -67,7 +70,7 @@ Resources:
               Bool:
                 kms:GrantIsForAWSResource: "true"
 
-  OscCuratedCrawlerRole:
+  OscCrawlerRole:
     Type: "AWS::IAM::Role"
     Properties:
       AssumeRolePolicyDocument:
@@ -84,9 +87,10 @@ Resources:
 
   OscCuratedCrawler:
     Type: "AWS::Glue::Crawler"
+    DependsOn: CuratedDatabase
     Properties:
       DatabaseName: !Ref CuratedDatabase
-      Role: !GetAtt OscCuratedCrawlerRole.Arn
+      Role: !GetAtt OscCrawlerRole.Arn
       TablePrefix: 'osc/'
       Targets:
         S3Targets:
@@ -98,6 +102,7 @@ Resources:
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: DEPRECATE_IN_DATABASE
+
 
   OscETLJobRole:
     Type: "AWS::IAM::Role"
@@ -116,12 +121,70 @@ Resources:
 
   OscETLJob:
     Type: "AWS::Glue::Job"
+    DependsOn: OscTable
     Properties:
       Role: !GetAtt OscETLJobRole.Arn
       Description:  "Transform to Parquet format"
       Command:
         Name: glueetl
-        ScriptLocation: "s3://aws-glue-scripts-716160732812-us-west-2/osc.py"
+        ScriptLocation: !Sub "s3://aws-glue-scripts-${AWS::AccountId}-${AWS::Region}/osc.py"
       DefaultArguments:
-        --source_database: !Ref CuratedDatabaseName
-        --target_database: !Ref StagingDatabaseName
+        --SOURCE_DATABASE: !Ref CuratedDatabaseName
+        --SOURCE_TABLE: "osc/changes"
+        --TARGET_DATABASE: !Ref StagingDatabaseName
+        --TARGET_TABLE: "osc/changes"
+
+  OscTable:
+    Type: "AWS::Glue::Table"
+    DependsOn: StagingDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref StagingDatabaseName
+      TableInput:
+        Name: 'osc/changes'
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+        PartitionKeys:
+          - Name: year
+            Type: INT
+          - Name: month
+            Type: INT
+          - Name: day
+            Type: INT
+          - Name: hour
+            Type: INT
+        StorageDescriptor:
+          Columns:
+            - Name: change
+              Type: STRING
+            - Name: feature
+              Type: STRING
+            - Name: id
+              Type: BIGINT
+            - Name: version
+              Type: INT
+            - Name: timestamp
+              Type: STRING
+            - Name: uid
+              Type: INT
+            - Name: user
+              Type: STRING
+            - Name: changeset
+              Type: INT
+            - Name: lon
+              Type: DOUBLE
+            - Name: lat
+              Type: DOUBLE
+          Location: !Sub
+            - "s3://${StagingBucket}/osc/changes/"
+            - StagingBucket:
+                Fn::ImportValue:
+                  !Sub "${DatalakeStack}:StagingBucketName"
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          Compressed: true
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+            Parameters:
+              serialization.format: "1"
