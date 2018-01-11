@@ -1,10 +1,10 @@
 # global paremeters
-AWS_PROFILE=demo
-AWS_REGION=us-west-2
-ARTIFACT_BUCKET_NAME=awscfncli-716160732812-us-west-2
+AWS_PROFILE=default
+AWS_REGION=us-east-1
+ARTIFACT_BUCKET_NAME=awscfncli-889515947644-us-east-1
 
 # aws/s3 key arn
-KMS_KEY_ARN=arn:aws:kms:us-west-2:716160732812:key/8f55e6ac-35f6-4a06-bf5b-767620a812f4
+KMS_KEY_ARN=arn:aws:kms:us-east-1:889515947644:key/89f70286-6beb-43be-a847-e91563fc81a4
 
 DATALAKE_STACK_NAME=OscAnalysis3-DataLake
 
@@ -61,9 +61,9 @@ redshift: Redshift.template.yaml
 			RedshiftInboundCIDR=180.168.157.96/28 \
 			RedshiftUsername=awsuser \
 			RedshiftPassword=Cheeseshop123 \
-			VpcId=vpc-47278d21 \
-			SubnetId1=subnet-9a8515c1 \
-			SubnetId2=subnet-61dcc228 \
+			VpcId=vpc-df31bbba \
+			SubnetId1=subnet-76388d01 \
+			SubnetId2=subnet-8efa0ca5 \
 			DatalakeStack=${DATALAKE_STACK_NAME} \
 			;
 
