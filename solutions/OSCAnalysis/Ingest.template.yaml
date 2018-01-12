@@ -276,7 +276,7 @@ Outputs:
     Export:
       Name: !Sub ${AWS::StackName}:IngestStreamArn
 
-  ChangePrefix:
+  S3ChangePrefix:
     Description: Stream
     Value:
       Fn::Join:

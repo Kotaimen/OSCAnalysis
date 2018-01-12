@@ -34,6 +34,25 @@ ingest: Ingest.template.yaml
 			KmsKeyArn=${KMS_KEY_ARN} \
 			DatalakeStack=${DATALAKE_STACK_NAME};
 
+
+dashboard: Dashboard.template.yaml
+	output_template_file=$$(mktemp); \
+	aws cloudformation package \
+		--profile ${AWS_PROFILE} \
+		--region ${AWS_REGION} \
+		--template-file $^ \
+		--s3-bucket ${ARTIFACT_BUCKET_NAME} \
+		--output-template-file $${output_template_file}; \
+	aws cloudformation deploy \
+		--profile ${AWS_PROFILE} \
+		--region ${AWS_REGION} \
+		--capabilities CAPABILITY_IAM \
+		--template-file $${output_template_file} \
+		--stack-name OscAnalysis3-Dashboard \
+		--parameter-overrides \
+			IngestStack=OscAnalysis3-Ingest;
+
+
 etl: ETL.template.yaml
 	aws cloudformation deploy \
 		--profile ${AWS_PROFILE} \
