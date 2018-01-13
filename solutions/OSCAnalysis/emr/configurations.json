@@ -1,0 +1,22 @@
+[
+  {
+    "Classification": "hive-site",
+    "Properties": {
+      "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+    },
+    "Configurations": []
+  },
+  {
+    "Classification": "presto-connector-hive",
+    "Properties": {
+      "hive.metastore.glue.datacatalog.enabled": "true"
+    },
+    "Configurations": []
+  },
+  {
+    "Classification": "spark-hive-site",
+    "Properties": {
+      "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+    }
+  }
+]

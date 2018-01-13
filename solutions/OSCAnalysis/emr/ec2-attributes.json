@@ -1,0 +1,7 @@
+{
+  "KeyName": "kotaimen-aws-us-east-1-default",
+  "InstanceProfile": "EMR_EC2_DefaultRole",
+  "SubnetId": "subnet-793bec20",
+  "EmrManagedSlaveSecurityGroup": "sg-90493ce4",
+  "EmrManagedMasterSecurityGroup": "sg-69b8cd1d"
+}
