@@ -77,13 +77,22 @@ Parameters:
     Description: VPC id.
     Type: AWS::EC2::VPC::Id
 
-#Mappings:
-#
-#  RegionMap:
-#    us-east-1:
-#      KinesisFirehoseCIDR: 52.70.63.192/27
-#    us-west-2:
-#      KinesisFirehoseCIDR: 52.89.255.224/27
+Mappings:
+
+  IpRange:
+    us-east-2:
+      Quicksight: 52.15.247.160/27
+    us-east-1:
+      Quicksight: 52.23.63.224/27
+    us-west-2:
+      Quicksight: 54.70.204.128/27
+    eu-west-1:
+      Quicksight: 52.210.255.224/27
+    ap-southeast-1:
+      Quicksight: 52.210.255.224/27
+    ap-southeast-2:
+      Quicksight: 54.153.249.96/27
+
 
 Conditions:
   IsMultiNodeCluster: !Not
@@ -159,7 +168,8 @@ Resources:
         - 'true'
         - !Ref 'AWS::NoValue'
       VpcSecurityGroupIds:
-        - !Ref 'RedshiftSecurityGroup'
+        - !Ref RedshiftSecurityGroup
+        - !Ref QuicksightAccessSecurityGroup
     Type: AWS::Redshift::Cluster
 
   RedshiftClusterSubnetGroup:
@@ -180,10 +190,38 @@ Resources:
           FromPort: !Ref 'DatabasePort'
           IpProtocol: tcp
           ToPort: !Ref 'DatabasePort'
+        - CidrIp:
+            !FindInMap
+              - IpRange
+              - !Ref 'AWS::Region'
+              - Quicksight
+          FromPort: !Ref 'DatabasePort'
+          IpProtocol: tcp
+          ToPort: !Ref 'DatabasePort'
+      VpcId: !Ref 'VpcId'
+
+  QuicksightAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable quicksight access.
+      SecurityGroupIngress:
+        - CidrIp:
+            !FindInMap
+              - IpRange
+              - !Ref 'AWS::Region'
+              - Quicksight
+          FromPort: !Ref 'DatabasePort'
+          IpProtocol: tcp
+          ToPort: !Ref 'DatabasePort'
       VpcId: !Ref 'VpcId'
 
 
+
 Outputs:
+
+  ClusterRoleArn:
+    Description: Cluster role
+    Value: !GetAtt RedshiftRole.Arn
 
   ConnectionURL:
     Description: Cluster endpoint
