@@ -91,7 +91,7 @@ Resources:
     Properties:
       DatabaseName: !Ref CuratedDatabase
       Role: !GetAtt OscCrawlerRole.Arn
-      TablePrefix: 'osc/'
+      TablePrefix: 'osc_'
       Targets:
         S3Targets:
           - Path: !Sub
@@ -119,21 +119,6 @@ Resources:
         - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
         - !Ref AllowUseKmsKeyPolicy
 
-  OscETLJob:
-    Type: "AWS::Glue::Job"
-    DependsOn: OscTable
-    Properties:
-      Role: !GetAtt OscETLJobRole.Arn
-      Description:  "Transform to Parquet format"
-      Command:
-        Name: glueetl
-        ScriptLocation: !Sub "s3://aws-glue-scripts-${AWS::AccountId}-${AWS::Region}/osc.py"
-      DefaultArguments:
-        --SOURCE_DATABASE: !Ref CuratedDatabaseName
-        --SOURCE_TABLE: "osc/changes"
-        --TARGET_DATABASE: !Ref StagingDatabaseName
-        --TARGET_TABLE: "osc/changes"
-
   OscTable:
     Type: "AWS::Glue::Table"
     DependsOn: StagingDatabase
@@ -141,19 +126,21 @@ Resources:
       CatalogId: !Ref AWS::AccountId
       DatabaseName: !Ref StagingDatabaseName
       TableInput:
-        Name: 'osc/changes'
+        Name: 'osc_changes'
         TableType: EXTERNAL_TABLE
         Parameters:
           classification: parquet
+          compressionType: snappy
+          typeOfData: file
         PartitionKeys:
           - Name: year
-            Type: INT
+            Type: STRING
           - Name: month
-            Type: INT
+            Type: STRING
           - Name: day
-            Type: INT
+            Type: STRING
           - Name: hour
-            Type: INT
+            Type: STRING
         StorageDescriptor:
           Columns:
             - Name: change
@@ -177,7 +164,7 @@ Resources:
             - Name: lat
               Type: DOUBLE
           Location: !Sub
-            - "s3://${StagingBucket}/osc/changes/"
+            - "s3://${StagingBucket}/${OscStagingPrefix}/"
             - StagingBucket:
                 Fn::ImportValue:
                   !Sub "${DatalakeStack}:StagingBucketName"
@@ -188,3 +175,25 @@ Resources:
             SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
             Parameters:
               serialization.format: "1"
+
+
+  OscETLJob:
+    Type: "AWS::Glue::Job"
+    DependsOn: OscTable
+    Properties:
+      Role: !GetAtt OscETLJobRole.Arn
+      Description:  "Transform to Parquet format"
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub "s3://aws-glue-scripts-${AWS::AccountId}-${AWS::Region}/osc.py"
+      DefaultArguments:
+        --SOURCE_DATABASE: !Ref CuratedDatabaseName
+        --SOURCE_TABLE: "osc_changes"
+        --TARGET_DATABASE: !Ref StagingDatabaseName
+        --TARGET_TABLE: "osc_changes"
+        --TARGET_TABLE_LOCATION: !Sub
+          - "s3://${StagingBucket}/${OscStagingPrefix}/"
+          - StagingBucket:
+              Fn::ImportValue:
+                !Sub "${DatalakeStack}:StagingBucketName"
+        --job-bookmark-enable: "job-bookmark-enable"

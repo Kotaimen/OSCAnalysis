@@ -13,7 +13,8 @@ args = getResolvedOptions(
         'SOURCE_DATABASE',
         'SOURCE_TABLE',
         'TARGET_DATABASE',
-        'TARGET_TABLE'
+        'TARGET_TABLE',
+        'TARGET_TABLE_LOCATION'
     ]
 );
 
@@ -43,7 +44,12 @@ applymapping1 = ApplyMapping.apply(frame=datasource0,
                                              ("user", "string", "user", "string"),
                                              ("changeset", "int", "changeset", "int"),
                                              ("lon", "double", "lon", "double"),
-                                             ("lat", "double", "lat", "double")],
+                                             ("lat", "double", "lat", "double"),
+                                             ("partition_0", "string", "year", "string"),
+                                             ("partition_1", "string", "month", "string"),
+                                             ("partition_2", "string", "day", "string"),
+                                             ("partition_3", "string", "hour", "string")
+                                             ],
                                    transformation_ctx="applymapping1")
 ## @type: SelectFields
 ## @args: [paths = ["change", "feature", "id", "version", "timestamp", "uid", "user", "changeset", "lon", "lat"], transformation_ctx = "selectfields2"]
@@ -51,7 +57,7 @@ applymapping1 = ApplyMapping.apply(frame=datasource0,
 ## @inputs: [frame = applymapping1]
 selectfields2 = SelectFields.apply(frame=applymapping1,
                                    paths=["change", "feature", "id", "version", "timestamp", "uid", "user", "changeset",
-                                          "lon", "lat"], transformation_ctx="selectfields2")
+                                          "lon", "lat", "year", "month", "day", "hour"], transformation_ctx="selectfields2")
 ## @type: ResolveChoice
 ## @args: [choice = "MATCH_CATALOG", database = "oscanalysis3-staging-database", table_name = "osc/changes", transformation_ctx = "resolvechoice3"]
 ## @return: resolvechoice3
@@ -68,6 +74,10 @@ resolvechoice4 = ResolveChoice.apply(frame=resolvechoice3, choice="make_struct",
 ## @args: [database = "oscanalysis3-staging-database", table_name = "osc/changes", transformation_ctx = "datasink5"]
 ## @return: datasink5
 ## @inputs: [frame = resolvechoice4]
-datasink5 = glueContext.write_dynamic_frame.from_catalog(frame=resolvechoice4, database=args["TARGET_DATABASE"],
-                                                         table_name=args["TARGET_TABLE"], transformation_ctx="datasink5")
+# datasink5 = glueContext.write_dynamic_frame.from_catalog(frame=resolvechoice4, database=args["TARGET_DATABASE"],
+#                                                          table_name=args["TARGET_TABLE"], transformation_ctx="datasink5")
+
+resolvechoice4.toDF().write.parquet(args['TARGET_TABLE_LOCATION'],
+                               partitionBy=['year', 'month', 'day', 'hour']);
+
 job.commit()

@@ -62,8 +62,8 @@ etl: ETL.template.yaml
 		--stack-name OscAnalysis3-ETL \
 		--parameter-overrides \
 			KmsKeyArn=${KMS_KEY_ARN} \
-			CuratedDatabaseName=oscanalysis3-curated-database \
-			StagingDatabaseName=oscanalysis3-staging-database \
+			CuratedDatabaseName=osc_curated_db \
+			StagingDatabaseName=osc_staging_db \
 			OscCuratedPrefix=openstreetmap/replication/changes \
 			OscStagingPrefix=osc/changes \
 			DatalakeStack=${DATALAKE_STACK_NAME};
